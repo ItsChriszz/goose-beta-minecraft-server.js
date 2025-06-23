@@ -1,4 +1,4 @@
-// server.js - Complete Fixed Version with Proper Environment Variable Handling
+// server.js - Complete Fixed Version with User Creation and Checkout API
 
 require('dotenv').config();
 const express = require('express');
@@ -6,6 +6,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const axios = require('axios');
+const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3001;
 
@@ -48,9 +49,30 @@ app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
 app.use(bodyParser.json());
 app.use(cors(corsOptions));
 
-// Fetch user/egg/allocation IDs
-async function fetchPterodactylMeta(email = 'admin@goosehosting.com') {
+// In-memory storage for server details (use database in production)
+const serverDatabase = new Map();
+
+// Generate random password
+function generatePassword(length = 12) {
+  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  let password = '';
+  for (let i = 0; i < length; i++) {
+    password += charset.charAt(Math.floor(Math.random() * charset.length));
+  }
+  return password;
+}
+
+// Generate username from email
+function generateUsername(email) {
+  const base = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+  const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+  return `${base}${random}`;
+}
+
+// Create or get user in Pterodactyl
+async function createOrGetUser(email, firstName = 'Player', lastName = 'Goose') {
   try {
+    // First, check if user already exists
     const usersRes = await axios.get(`${PTERODACTYL_BASE}/users`, {
       headers: {
         Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
@@ -58,14 +80,64 @@ async function fetchPterodactylMeta(email = 'admin@goosehosting.com') {
       }
     });
 
-    console.log('User API response:', usersRes.data);
+    const existingUser = usersRes.data.data.find(u => u.attributes.email === email);
+    
+    if (existingUser) {
+      console.log('👤 Found existing user:', email);
+      return {
+        userId: existingUser.attributes.id,
+        username: existingUser.attributes.username,
+        email: existingUser.attributes.email,
+        isNewUser: false
+      };
+    }
 
-    const userData = usersRes.data.data;
-    if (!Array.isArray(userData)) throw new Error('Unexpected response format for users');
+    // Create new user
+    const username = generateUsername(email);
+    const password = generatePassword();
+    
+    const userData = {
+      email: email,
+      username: username,
+      first_name: firstName,
+      last_name: lastName,
+      password: password
+    };
 
-    const user = userData.find(u => u.attributes.email === email);
-    if (!user) throw new Error(`User with email ${email} not found.`);
+    console.log('👤 Creating new user:', { email, username, firstName, lastName });
 
+    const createUserRes = await axios.post(`${PTERODACTYL_BASE}/users`, userData, {
+      headers: {
+        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      }
+    });
+
+    const newUser = createUserRes.data.attributes;
+    
+    console.log('✅ User created successfully:', newUser.email);
+
+    return {
+      userId: newUser.id,
+      username: newUser.username,
+      email: newUser.email,
+      password: password, // Only returned for new users
+      isNewUser: true
+    };
+
+  } catch (err) {
+    console.error('❌ Failed to create/get user:', err.message);
+    if (err.response) {
+      console.error('Response data:', err.response.data);
+    }
+    throw err;
+  }
+}
+
+// Fetch user/egg/allocation IDs
+async function fetchPterodactylMeta(userId) {
+  try {
     const eggsRes = await axios.get(`${PTERODACTYL_BASE}/nests/1/eggs`, {
       headers: {
         Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
@@ -89,6 +161,7 @@ async function fetchPterodactylMeta(email = 'admin@goosehosting.com') {
     });
 
     const nodeId = nodesRes.data.data[0].attributes.id;
+    const nodeData = nodesRes.data.data[0].attributes;
 
     const allocRes = await axios.get(`${PTERODACTYL_BASE}/nodes/${nodeId}/allocations`, {
       headers: {
@@ -101,12 +174,18 @@ async function fetchPterodactylMeta(email = 'admin@goosehosting.com') {
     if (!allocation) throw new Error('No free allocation found.');
 
     return {
-      userId: user.attributes.id,
+      userId: userId,
       eggName: minecraftEgg.attributes.name,
       eggId: minecraftEgg.attributes.id,
       dockerImage: minecraftEgg.attributes.docker_image,
       startup: minecraftEgg.attributes.startup,
-      allocationId: allocation.attributes.id
+      allocationId: allocation.attributes.id,
+      serverIp: allocation.attributes.ip,
+      serverPort: allocation.attributes.port,
+      nodeInfo: {
+        name: nodeData.name,
+        location: nodeData.location_id
+      }
     };
   } catch (err) {
     console.error('❌ Failed to fetch Pterodactyl meta:', err.message);
@@ -121,7 +200,14 @@ async function createPterodactylServer(session) {
     console.log('==========================================');
     console.log('📋 Session Metadata:', session.metadata);
 
-    const config = await fetchPterodactylMeta();
+    // Extract customer email from session
+    const customerEmail = session.customer_details?.email || session.metadata.customerEmail || 'player@goosehosting.com';
+    
+    // Create or get user
+    const userInfo = await createOrGetUser(customerEmail);
+    
+    // Get server configuration
+    const config = await fetchPterodactylMeta(userInfo.userId);
     
     // Extract individual metadata fields (all are strings from Stripe)
     const serverName = session.metadata.serverName || `GooseServer-${Date.now()}`;
@@ -146,6 +232,8 @@ async function createPterodactylServer(session) {
     console.log('  • Whitelist:', enableWhitelist);
     console.log('  • PvP:', enablePvp);
     console.log('  • Plugins:', selectedPlugins.length > 0 ? selectedPlugins.join(', ') : 'None');
+    console.log('  • Customer Email:', customerEmail);
+    console.log('  • Username:', userInfo.username);
 
     // Determine server jar based on server type
     let serverJar = 'server.jar';
@@ -234,17 +322,49 @@ async function createPterodactylServer(session) {
 
     const serverId = response.data.attributes?.id;
     const serverUuid = response.data.attributes?.uuid;
+    const serverIdentifier = response.data.attributes?.identifier;
 
     console.log('✅ Server created successfully!');
     console.log('📦 Server Details:');
     console.log('  • Server ID:', serverId);
     console.log('  • Server UUID:', serverUuid);
+    console.log('  • Server Identifier:', serverIdentifier);
     console.log('  • Name:', serverName);
+    console.log('  • IP:Port:', `${config.serverIp}:${config.serverPort}`);
     console.log('  • User ID:', config.userId);
     console.log('  • Allocation ID:', config.allocationId);
     console.log('  • Egg ID:', config.eggId);
     console.log('  • Docker Image:', config.dockerImage);
     console.log('==========================================');
+
+    // Store server details for checkout page
+    const serverDetails = {
+      serverId,
+      serverUuid,
+      serverIdentifier,
+      serverName,
+      serverIp: config.serverIp,
+      serverPort: config.serverPort,
+      serverType,
+      minecraftVersion,
+      planId,
+      maxPlayers,
+      totalRam,
+      viewDistance,
+      enableWhitelist,
+      enablePvp,
+      selectedPlugins,
+      customerEmail,
+      username: userInfo.username,
+      password: userInfo.password, // Only present for new users
+      isNewUser: userInfo.isNewUser,
+      panelUrl: process.env.PTERODACTYL_PANEL_URL || PTERODACTYL_BASE.replace('/api/application', ''),
+      createdAt: new Date().toISOString(),
+      sessionId: session.id
+    };
+
+    // Store in our database (use real database in production)
+    serverDatabase.set(session.id, serverDetails);
 
     // If plugins are selected and it's a supported server type, we could install them here
     if (selectedPlugins.length > 0 && (serverType === 'paper' || serverType === 'spigot')) {
@@ -258,6 +378,7 @@ async function createPterodactylServer(session) {
       serverId,
       serverUuid,
       serverName,
+      serverDetails,
       message: 'Server created successfully'
     };
 
@@ -330,6 +451,37 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// Get server details for checkout page
+app.get('/server-details/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    console.log('🔍 Retrieving server details for session:', sessionId);
+    
+    // Get from our database
+    const serverDetails = serverDatabase.get(sessionId);
+    
+    if (!serverDetails) {
+      return res.status(404).json({ error: 'Server details not found' });
+    }
+
+    // Also get the Stripe session for additional info
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    
+    const response = {
+      ...serverDetails,
+      paymentStatus: session.payment_status,
+      amountTotal: session.amount_total,
+      currency: session.currency
+    };
+
+    res.json(response);
+  } catch (err) {
+    console.error('❌ Error retrieving server details:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Stripe Checkout Session Creation
 app.post('/create-checkout-session', async (req, res) => {
   try {
@@ -374,7 +526,7 @@ app.post('/create-checkout-session', async (req, res) => {
         quantity: 1,
       }],
       mode: 'subscription',
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${process.env.FRONTEND_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL}/setup/${encodeURIComponent(serverConfig.serverName)}`,
       
       // Use the safe metadata object
