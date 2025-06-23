@@ -1,4 +1,4 @@
-// server.js - Complete Fixed Version with User Creation and Checkout API
+// server.js - Complete Fixed Version with Same Environment Variables
 
 require('dotenv').config();
 const express = require('express');
@@ -6,7 +6,6 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const axios = require('axios');
-const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3001;
 
@@ -358,7 +357,7 @@ async function createPterodactylServer(session) {
       username: userInfo.username,
       password: userInfo.password, // Only present for new users
       isNewUser: userInfo.isNewUser,
-      panelUrl: process.env.PTERODACTYL_PANEL_URL || PTERODACTYL_BASE.replace('/api/application', ''),
+      panelUrl: PTERODACTYL_BASE.replace('/api/application', ''),
       createdAt: new Date().toISOString(),
       sessionId: session.id
     };
@@ -482,7 +481,7 @@ app.get('/server-details/:sessionId', async (req, res) => {
   }
 });
 
-// Stripe Checkout Session Creation
+// Stripe Checkout Session Creation (EXISTING ENDPOINT - KEEPING SAME)
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { planId, serverConfig } = req.body;
@@ -543,7 +542,7 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-// Get session details endpoint
+// Get session details endpoint (EXISTING ENDPOINT - KEEPING SAME)
 app.get('/session-details/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -567,7 +566,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
   }
 });
 
-// Health check endpoint
+// Health check endpoint (EXISTING ENDPOINT - KEEPING SAME)
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy',
