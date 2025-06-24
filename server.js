@@ -1,576 +1,401 @@
-// ServerConfiguration.jsx - FIXED VERSION with Better RAM Validation
-import React, { useState, useEffect } from "react"
-import { useParams, useNavigate } from "react-router-dom"
-import { Crown } from "lucide-react"
-import Header from "./Header"
-import PlanSelector from "./PlanSelector"
-import ConfigurationTabs from "./ConfigurationTabs"
-import DeploySection from "./DeploySection"
-import { plans, minecraftVersions, serverTypes, popularPlugins } from "./ServerData"
+const express = require('express');
+const cors = require('cors');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+require('dotenv').config();
 
-export default function ServerConfiguration() {
-  const { serverName: urlServerName } = useParams()
-  const navigate = useNavigate()
-  
-  const [activeTab, setActiveTab] = useState("basic")
-  const [serverName, setServerName] = useState(() => {
-    try {
-      return decodeURIComponent(urlServerName || "")
-    } catch {
-      return ""
-    }
-  })
-  const [maxPlayers, setMaxPlayers] = useState(20)
-  const [ramAllocation, setRamAllocation] = useState(4)
-  const [viewDistance, setViewDistance] = useState(10)
-  const [enableWhitelist, setEnableWhitelist] = useState(false)
-  const [enablePvp, setEnablePvp] = useState(true)
-  const [selectedPlugins, setSelectedPlugins] = useState([])
-  const [selectedServerType, setSelectedServerType] = useState("")
-  const [selectedPlan, setSelectedPlan] = useState("pro")
-  const [minecraftVersion, setMinecraftVersion] = useState("")
-  const [isDeploying, setIsDeploying] = useState(false)
-  const [additionalRam, setAdditionalRam] = useState(0) // Initialize as number
-  const [isMobile, setIsMobile] = useState(false)
-  const [customerEmail, setCustomerEmail] = useState("")
+const app = express();
+const PORT = process.env.PORT || 3001;
 
-  // Helper function to safely parse numbers
-  const safeParseInt = (value, fallback = 0) => {
-    if (value === null || value === undefined || value === '') return fallback
-    const parsed = parseInt(value)
-    return isNaN(parsed) ? fallback : parsed
+// Middleware
+app.use(cors({
+  origin: ['http://localhost:5173', 'https://goosehosting.com', 'https://www.goosehosting.com'],
+  credentials: true
+}));
+app.use(express.json());
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Safe parsing helper function
+const safeParseInt = (value, fallback = 0) => {
+  if (value === null || value === undefined || value === '') {
+    console.log(`⚠️  safeParseInt: value is ${value}, using fallback ${fallback}`)
+    return fallback
   }
-
-  const safeParseFloat = (value, fallback = 0) => {
-    if (value === null || value === undefined || value === '') return fallback
-    const parsed = parseFloat(value)
-    return isNaN(parsed) ? fallback : parsed
+  const parsed = parseInt(value)
+  if (isNaN(parsed)) {
+    console.log(`⚠️  safeParseInt: parsed value is NaN for input "${value}", using fallback ${fallback}`)
+    return fallback
   }
+  console.log(`✅ safeParseInt: successfully parsed "${value}" to ${parsed}`)
+  return parsed
+}
 
-  // Safe plan getter with fallback
-  const getCurrentPlan = () => {
-    const plan = plans.find(p => p && p.id === selectedPlan)
-    if (!plan) {
-      console.warn(`Plan not found: ${selectedPlan}, using default pro plan`)
-      return plans.find(p => p.id === 'pro') || plans[1] || {
-        id: 'pro',
-        name: 'Honker Pro', 
-        ram: 4,
-        price: 9.99,
-        maxPlayers: 30,
-        features: ['Default plan']
-      }
-    }
-    return plan
-  }
+// Main checkout session creation endpoint
+app.post('/create-checkout-session', async (req, res) => {
+  try {
+    const { serverConfig, planId } = req.body
 
-  const currentPlan = getCurrentPlan()
+    // 🚀 COMPREHENSIVE LOGGING STARTS HERE
+    console.log('\n🚀 ===== BACKEND REQUEST RECEIVED =====')
+    console.log('📅 Timestamp:', new Date().toISOString())
+    console.log('🌐 Request URL:', req.url)
+    console.log('📋 Request Method:', req.method)
 
-  // FIXED: Much more robust RAM calculation
-  const getTotalRam = () => {
-    try {
-      // Get plan base RAM with multiple fallbacks
-      let planBaseRam = currentPlan.ram
-      if (typeof planBaseRam === 'string') {
-        planBaseRam = safeParseInt(planBaseRam, 4)
-      } else if (typeof planBaseRam !== 'number' || isNaN(planBaseRam)) {
-        planBaseRam = 4
-      }
+    // Log the raw request body
+    console.log('\n📥 RAW REQUEST BODY:')
+    console.log('Type of req.body:', typeof req.body)
+    console.log('Full req.body:', JSON.stringify(req.body, null, 2))
 
-      // Get additional RAM with validation
-      const additionalRamValue = safeParseInt(additionalRam, 0)
+    // Log extracted values
+    console.log('\n📦 EXTRACTED VALUES:')
+    console.log('📥 Backend received serverConfig:', serverConfig)
+    console.log('📥 Backend received planId:', planId)
 
-      const total = planBaseRam + additionalRamValue
-
-      // Final validation - ensure we return a valid positive number
-      if (isNaN(total) || total < 1) {
-        console.warn('Invalid total RAM calculated, using fallback of 4GB')
-        return 4
-      }
-
-      console.log('RAM Calculation:', {
-        planBaseRam,
-        additionalRam: additionalRamValue,
-        total,
-        currentPlan: currentPlan.id
+    // Detailed serverConfig logging
+    if (serverConfig) {
+      console.log('\n🔍 DETAILED SERVER CONFIG ANALYSIS:')
+      console.table({
+        'Server Name': serverConfig?.serverName || 'MISSING',
+        'Server Type': serverConfig?.serverType || 'MISSING',
+        'Minecraft Version': serverConfig?.minecraftVersion || 'MISSING',
+        'Total RAM': `${serverConfig?.totalRam} (${typeof serverConfig?.totalRam})`,
+        'Max Players': `${serverConfig?.maxPlayers} (${typeof serverConfig?.maxPlayers})`,
+        'View Distance': `${serverConfig?.viewDistance} (${typeof serverConfig?.viewDistance})`,
+        'Enable Whitelist': `${serverConfig?.enableWhitelist} (${typeof serverConfig?.enableWhitelist})`,
+        'Enable PvP': `${serverConfig?.enablePvp} (${typeof serverConfig?.enablePvp})`,
+        'Customer Email': serverConfig?.customerEmail || 'MISSING',
+        'Selected Plugins': Array.isArray(serverConfig?.selectedPlugins) ? `[${serverConfig.selectedPlugins.length} plugins]` : 'Invalid/Missing'
       })
 
-      return total
-    } catch (error) {
-      console.error('Error calculating total RAM:', error)
-      return 4
-    }
-  }
+      // Individual field validation logging
+      console.log('\n🧪 INDIVIDUAL FIELD VALIDATION:')
+      console.log('totalRam validation:')
+      console.log('  - Raw value:', serverConfig.totalRam)
+      console.log('  - Type:', typeof serverConfig.totalRam)
+      console.log('  - Is number:', typeof serverConfig.totalRam === 'number')
+      console.log('  - Is NaN:', isNaN(serverConfig.totalRam))
+      console.log('  - Parsed int:', parseInt(serverConfig.totalRam))
+      console.log('  - Is parsed NaN:', isNaN(parseInt(serverConfig.totalRam)))
 
-  const totalRam = getTotalRam()
+      console.log('maxPlayers validation:')
+      console.log('  - Raw value:', serverConfig.maxPlayers)
+      console.log('  - Type:', typeof serverConfig.maxPlayers)
+      console.log('  - Is number:', typeof serverConfig.maxPlayers === 'number')
+      console.log('  - Is NaN:', isNaN(serverConfig.maxPlayers))
 
-  // Safe cost calculation
-  const getTotalMonthlyCost = () => {
-    try {
-      const basePrice = safeParseFloat(currentPlan.price, 9.99)
-      const additionalRamCost = safeParseInt(additionalRam, 0) * 2.25
-      return basePrice + additionalRamCost
-    } catch (error) {
-      console.error('Error calculating total cost:', error)
-      return 9.99
-    }
-  }
+      console.log('viewDistance validation:')
+      console.log('  - Raw value:', serverConfig.viewDistance)
+      console.log('  - Type:', typeof serverConfig.viewDistance)
+      console.log('  - Is number:', typeof serverConfig.viewDistance === 'number')
+      console.log('  - Is NaN:', isNaN(serverConfig.viewDistance))
 
-  const totalMonthlyCost = getTotalMonthlyCost()
-
-  // Check screen size and scroll to top when component mounts
-  useEffect(() => {
-    const checkScreenSize = () => {
-      setIsMobile(window.innerWidth < 768)
+    } else {
+      console.log('❌ NO SERVER CONFIG RECEIVED!')
     }
 
-    checkScreenSize()
-    window.addEventListener('resize', checkScreenSize)
-    
-    window.scrollTo({
-      top: 0,
-      left: 0,
-      behavior: 'smooth'
+    // Immediate validation with detailed logging
+    console.log('\n🛡️  VALIDATION PHASE:')
+    const totalRam = safeParseInt(serverConfig?.totalRam, 4)
+    const maxPlayers = safeParseInt(serverConfig?.maxPlayers, 20)
+    const viewDistance = safeParseInt(serverConfig?.viewDistance, 10)
+
+    console.log('Validated values:')
+    console.log('  - totalRam:', totalRam, '(original:', serverConfig?.totalRam, ')')
+    console.log('  - maxPlayers:', maxPlayers, '(original:', serverConfig?.maxPlayers, ')')
+    console.log('  - viewDistance:', viewDistance, '(original:', serverConfig?.viewDistance, ')')
+
+    // Critical validation check
+    if (!totalRam || isNaN(totalRam) || totalRam < 1) {
+      console.error('❌ CRITICAL: Invalid totalRam value!')
+      console.error('  - Original value:', serverConfig?.totalRam)
+      console.error('  - Type:', typeof serverConfig?.totalRam)
+      console.error('  - Parsed value:', totalRam)
+      console.error('  - Is NaN:', isNaN(totalRam))
+      return res.status(400).json({ 
+        error: 'Invalid totalRam value: NaN or undefined',
+        received: serverConfig?.totalRam,
+        type: typeof serverConfig?.totalRam,
+        parsed: totalRam
+      })
+    }
+
+    // Validation summary
+    console.log('\n✅ VALIDATION SUMMARY:')
+    console.log('All numeric values valid:', {
+      totalRam: !isNaN(totalRam) && totalRam > 0,
+      maxPlayers: !isNaN(maxPlayers) && maxPlayers > 0,
+      viewDistance: !isNaN(viewDistance) && viewDistance > 0
     })
 
-    return () => window.removeEventListener('resize', checkScreenSize)
-  }, [])
+    console.log('===== END BACKEND REQUEST LOG =====\n')
+    // 🚀 COMPREHENSIVE LOGGING ENDS HERE
 
-  const handleBackToDashboard = () => {
-    navigate('/')
-  }
-
-  // Filter server types based on plan and RAM with safety checks
-  const getAvailableServerTypes = () => {
-    try {
-      if (!Array.isArray(serverTypes)) return []
-      
-      if (selectedPlan === "starter") {
-        return serverTypes.filter(type => type && type.id === "paper")
-      }
-      if (totalRam < 4) {
-        return serverTypes.filter(type => type && (type.minRam || 0) <= totalRam)
-      }
-      if (totalRam < 6) {
-        return serverTypes.filter(type => type && type.id !== "forge")
-      }
-      return serverTypes
-    } catch (error) {
-      console.error('Error getting available server types:', error)
-      return []
-    }
-  }
-
-  // Filter plugins based on plan
-  const getAvailablePlugins = () => {
-    try {
-      if (selectedPlan === "starter") {
-        return []
-      }
-      return Array.isArray(popularPlugins) ? popularPlugins : []
-    } catch (error) {
-      console.error('Error getting available plugins:', error)
-      return []
-    }
-  }
-
-  // FIXED: Enhanced deploy function with comprehensive validation
-  const handleDeployServer = async () => {
-    console.log('🚀 Starting deployment validation...')
-    
-    // Pre-deployment validation with detailed logging
-    const validationErrors = []
-    
-    if (!serverName?.trim()) {
-      validationErrors.push('Server name is required')
-    }
-    if (!minecraftVersion) {
-      validationErrors.push('Minecraft version is required')
-    }
-    if (!selectedServerType) {
-      validationErrors.push('Server type is required')
-    }
-    if (!customerEmail?.trim() || !customerEmail.includes('@')) {
-      validationErrors.push('Valid email address is required')
-    }
-
-    // CRITICAL: Validate RAM values before sending
-    const finalTotalRam = getTotalRam()
-    if (isNaN(finalTotalRam) || finalTotalRam < 1) {
-      validationErrors.push(`Invalid RAM configuration: ${finalTotalRam}`)
-    }
-
-    if (validationErrors.length > 0) {
-      alert('Please fix the following issues:\n' + validationErrors.join('\n'))
-      return
-    }
-
-    // Check environment variables
-    const stripePublicKey = import.meta.env.VITE_STRIPE_PUBLIC_KEY
-    if (!stripePublicKey) {
-      console.error('❌ VITE_STRIPE_PUBLIC_KEY is missing')
-      alert('Configuration error: Stripe key is missing. Please contact support.')
-      return
-    }
-
-    setIsDeploying(true)
-    
-    try {
-      // Create server configuration with BULLETPROOF validation
-      const validatedMaxPlayers = Math.max(1, safeParseInt(maxPlayers, 20))
-      const validatedViewDistance = Math.max(3, safeParseInt(viewDistance, 10))
-      
-      const serverConfig = {
-        serverName: String(serverName?.trim() || ''),
-        serverType: String(selectedServerType),
-        minecraftVersion: String(minecraftVersion),
-        maxPlayers: validatedMaxPlayers,
-        totalRam: finalTotalRam,
-        viewDistance: validatedViewDistance,
-        enableWhitelist: Boolean(enableWhitelist),
-        enablePvp: Boolean(enablePvp),
-        selectedPlugins: Array.isArray(selectedPlugins) ? selectedPlugins : [],
-        customerEmail: String(customerEmail?.trim() || '')
-      }
-
-      // BULLETPROOF validation before sending
-      console.log('🔍 Final validation check:')
-      console.log('Raw additionalRam:', additionalRam, typeof additionalRam)
-      console.log('Raw maxPlayers:', maxPlayers, typeof maxPlayers)
-      console.log('Raw viewDistance:', viewDistance, typeof viewDistance)
-      console.log('Plan base RAM:', currentPlan.ram, typeof currentPlan.ram)
-      console.log('Calculated totalRam:', finalTotalRam, typeof finalTotalRam)
-      console.log('Validated maxPlayers:', validatedMaxPlayers, typeof validatedMaxPlayers)
-      console.log('Validated viewDistance:', validatedViewDistance, typeof validatedViewDistance)
-      console.log('All values valid?', {
-        totalRam: !isNaN(finalTotalRam) && finalTotalRam > 0,
-        maxPlayers: !isNaN(validatedMaxPlayers) && validatedMaxPlayers > 0,
-        viewDistance: !isNaN(validatedViewDistance) && validatedViewDistance > 0
+    // Basic validation
+    if (!serverConfig || !planId) {
+      console.error('❌ Missing required fields:', { serverConfig: !!serverConfig, planId: !!planId })
+      return res.status(400).json({ 
+        error: 'Missing required fields: serverConfig and planId are required' 
       })
+    }
 
-      // Triple check all numeric values
-      if (isNaN(serverConfig.totalRam)) {
-        throw new Error(`CRITICAL: totalRam is NaN! Raw values - additionalRam: ${additionalRam}, planRam: ${currentPlan.ram}`)
-      }
-      if (isNaN(serverConfig.maxPlayers)) {
-        throw new Error(`CRITICAL: maxPlayers is NaN! Raw value: ${maxPlayers}`)
-      }
-      if (isNaN(serverConfig.viewDistance)) {
-        throw new Error(`CRITICAL: viewDistance is NaN! Raw value: ${viewDistance}`)
-      }
+    // Validate required serverConfig fields
+    const requiredFields = ['serverName', 'serverType', 'minecraftVersion', 'customerEmail']
+    const missingFields = requiredFields.filter(field => !serverConfig[field])
+    
+    if (missingFields.length > 0) {
+      console.error('❌ Missing required serverConfig fields:', missingFields)
+      return res.status(400).json({ 
+        error: `Missing required fields: ${missingFields.join(', ')}` 
+      })
+    }
 
-      console.log('🦆 GOOSE HOSTING - Creating Checkout Session')
-      console.log('==========================================')
-      console.log('📋 Server Configuration:', serverConfig)
-      console.log('💰 Plan:', selectedPlan, `($${currentPlan.price}/mo)`)
-      console.log('💵 Total Cost:', `$${totalMonthlyCost.toFixed(2)}/mo`)
-      console.log('🧠 Total RAM:', finalTotalRam + 'GB')
-      console.log('==========================================')
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(serverConfig.customerEmail)) {
+      console.error('❌ Invalid email format:', serverConfig.customerEmail)
+      return res.status(400).json({ 
+        error: 'Invalid email format' 
+      })
+    }
 
-      // Call backend API
-      const apiUrl = import.meta.env.VITE_API_URL || 'https://stripeapibeta.goosehosting.com'
-      console.log('🌐 API URL:', apiUrl)
-      
-      const response = await fetch(`${apiUrl}/create-checkout-session`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
+    // Define plan pricing
+    const planPricing = {
+      starter: { basePrice: 4.99, ram: 2 },
+      pro: { basePrice: 9.99, ram: 4 },
+      premium: { basePrice: 19.99, ram: 8 },
+      enterprise: { basePrice: 39.99, ram: 16 }
+    }
+
+    // Get plan details
+    const plan = planPricing[planId]
+    if (!plan) {
+      console.error('❌ Invalid plan ID:', planId)
+      return res.status(400).json({ 
+        error: 'Invalid plan ID' 
+      })
+    }
+
+    // Calculate total price based on RAM
+    const additionalRam = Math.max(0, totalRam - plan.ram)
+    const additionalRamCost = additionalRam * 2.25 // $2.25 per GB
+    const totalPrice = plan.basePrice + additionalRamCost
+
+    console.log('\n💰 PRICING CALCULATION:')
+    console.log('Plan:', planId, `($${plan.basePrice}/mo, ${plan.ram}GB base)`)
+    console.log('Total RAM needed:', totalRam, 'GB')
+    console.log('Additional RAM:', additionalRam, 'GB')
+    console.log('Additional RAM cost:', `$${additionalRamCost.toFixed(2)}/mo`)
+    console.log('Total monthly price:', `$${totalPrice.toFixed(2)}/mo`)
+
+    // Create Stripe checkout session
+    console.log('\n🔄 Creating Stripe checkout session...')
+    
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'subscription',
+      customer_email: serverConfig.customerEmail,
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: {
+              name: `Goose Hosting - ${planId.charAt(0).toUpperCase() + planId.slice(1)} Plan`,
+              description: `Minecraft Server: ${serverConfig.serverName} (${totalRam}GB RAM, ${maxPlayers} players)`,
+              images: ['https://goosehosting.com/logo-stripe.png'],
+            },
+            unit_amount: Math.round(totalPrice * 100), // Convert to cents
+            recurring: {
+              interval: 'month',
+            },
+          },
+          quantity: 1,
         },
-        body: JSON.stringify({
-          planId: selectedPlan,
-          serverConfig: serverConfig
-        }),
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error('❌ Backend response error:', {
-          status: response.status,
-          statusText: response.statusText,
-          body: errorText,
-          sentConfig: serverConfig
-        })
-        throw new Error(`Backend error (${response.status}): ${errorText}`)
-      }
-
-      const responseData = await response.json()
-      const { sessionId, url } = responseData
-      
-      if (!sessionId) {
-        console.error('❌ No session ID in response:', responseData)
-        throw new Error('Invalid response from server: missing session ID')
-      }
-
-      console.log('✅ Checkout session created:', sessionId)
-
-      // Check if Stripe.js is loaded
-      if (!window.Stripe) {
-        throw new Error('Stripe.js not loaded. Please refresh the page and try again.')
-      }
-
-      // Initialize Stripe
-      console.log('🔄 Initializing Stripe...')
-      const stripe = window.Stripe(stripePublicKey)
-      
-      if (!stripe) {
-        throw new Error('Failed to initialize Stripe. Please check configuration.')
-      }
-
-      console.log('🔄 Redirecting to Stripe Checkout...')
-
-      // Redirect to Stripe Checkout
-      if (url) {
-        // Use direct URL if provided
-        window.location.href = url
-      } else {
-        // Use session ID
-        const { error } = await stripe.redirectToCheckout({
-          sessionId: sessionId,
-        })
-
-        if (error) {
-          console.error('❌ Stripe redirect error:', error)
-          throw new Error(`Payment redirect failed: ${error.message}`)
+      ],
+      success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/configure/${encodeURIComponent(serverConfig.serverName)}`,
+      metadata: {
+        planId: planId,
+        serverName: serverConfig.serverName,
+        serverType: serverConfig.serverType,
+        minecraftVersion: serverConfig.minecraftVersion,
+        totalRam: totalRam.toString(),
+        maxPlayers: maxPlayers.toString(),
+        viewDistance: viewDistance.toString(),
+        enableWhitelist: serverConfig.enableWhitelist?.toString() || 'false',
+        enablePvp: serverConfig.enablePvp?.toString() || 'true',
+        selectedPlugins: JSON.stringify(serverConfig.selectedPlugins || []),
+        customerEmail: serverConfig.customerEmail,
+        totalPrice: totalPrice.toFixed(2)
+      },
+      subscription_data: {
+        metadata: {
+          planId: planId,
+          serverName: serverConfig.serverName,
+          totalRam: totalRam.toString(),
+          serverConfig: JSON.stringify({
+            serverName: serverConfig.serverName,
+            serverType: serverConfig.serverType,
+            minecraftVersion: serverConfig.minecraftVersion,
+            totalRam: totalRam,
+            maxPlayers: maxPlayers,
+            viewDistance: viewDistance,
+            enableWhitelist: serverConfig.enableWhitelist,
+            enablePvp: serverConfig.enablePvp,
+            selectedPlugins: serverConfig.selectedPlugins || [],
+            customerEmail: serverConfig.customerEmail
+          })
         }
       }
+    })
 
-    } catch (error) {
-      console.error('❌ Deployment error:', error)
-      
-      // More specific error messages
-      let errorMessage = 'Failed to start deployment'
-      if (error.message.includes('fetch')) {
-        errorMessage = 'Network error: Could not connect to payment server'
-      } else if (error.message.includes('Stripe')) {
-        errorMessage = 'Payment system error: ' + error.message
-      } else if (error.message.includes('CRITICAL')) {
-        errorMessage = 'Configuration error: ' + error.message
-      } else {
-        errorMessage = error.message
+    console.log('✅ Stripe session created successfully!')
+    console.log('Session ID:', session.id)
+    console.log('Session URL:', session.url)
+
+    // Send response
+    res.json({
+      sessionId: session.id,
+      url: session.url,
+      planId: planId,
+      totalPrice: totalPrice.toFixed(2),
+      serverConfig: {
+        serverName: serverConfig.serverName,
+        totalRam: totalRam,
+        maxPlayers: maxPlayers,
+        viewDistance: viewDistance
       }
-      
-      alert(`${errorMessage}\n\nPlease try again or contact support if the issue persists.`)
-      setIsDeploying(false)
-    }
+    })
+
+  } catch (error) {
+    console.error('❌ Error creating checkout session:', error)
+    console.error('Error stack:', error.stack)
+    
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    })
+  }
+})
+
+// Webhook endpoint for Stripe events
+app.post('/webhook', express.raw({type: 'application/json'}), (req, res) => {
+  const sig = req.headers['stripe-signature']
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET
+
+  let event
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret)
+    console.log('✅ Webhook signature verified')
+  } catch (err) {
+    console.error('❌ Webhook signature verification failed:', err.message)
+    return res.status(400).send(`Webhook Error: ${err.message}`)
   }
 
-  const togglePlugin = (pluginId) => {
-    setSelectedPlugins((prev) => 
-      prev.includes(pluginId) 
-        ? prev.filter((id) => id !== pluginId) 
-        : [...prev, pluginId]
-    )
+  // Handle the event
+  switch (event.type) {
+    case 'checkout.session.completed':
+      const session = event.data.object
+      console.log('🎉 Payment successful for session:', session.id)
+      console.log('💰 Amount paid:', session.amount_total / 100, session.currency.toUpperCase())
+      console.log('📧 Customer email:', session.customer_email)
+      console.log('🖥️  Server metadata:', session.metadata)
+      
+      // Here you would typically:
+      // 1. Provision the Minecraft server
+      // 2. Send confirmation email
+      // 3. Update your database
+      // 4. Set up server monitoring
+      
+      break
+    
+    case 'invoice.payment_succeeded':
+      const invoice = event.data.object
+      console.log('💳 Monthly payment succeeded:', invoice.id)
+      break
+    
+    case 'invoice.payment_failed':
+      const failedInvoice = event.data.object
+      console.log('❌ Monthly payment failed:', failedInvoice.id)
+      break
+    
+    case 'customer.subscription.deleted':
+      const subscription = event.data.object
+      console.log('🗑️  Subscription cancelled:', subscription.id)
+      break
+    
+    default:
+      console.log(`🔔 Unhandled event type: ${event.type}`)
   }
 
-  // Reset server type if it becomes unavailable
-  useEffect(() => {
-    const availableTypes = getAvailableServerTypes()
-    if (selectedServerType && !availableTypes.find(type => type.id === selectedServerType)) {
-      setSelectedServerType("")
-    }
-  }, [selectedPlan, totalRam])
+  res.json({received: true})
+})
 
-  // Reset plugins if plan doesn't support them
-  useEffect(() => {
-    if (selectedPlan === "starter" && selectedPlugins.length > 0) {
-      setSelectedPlugins([])
-    }
-  }, [selectedPlan])
+// Success page data endpoint
+app.get('/session/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    
+    console.log('🔍 Retrieving session:', sessionId)
+    
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['subscription', 'customer']
+    })
 
-  // FIXED: Safer RAM allocation setter
-  const handleRamAllocationChange = (value) => {
-    try {
-      console.log('🔧 RAM allocation change requested:', value, typeof value)
-      
-      // Validate input
-      const newValue = safeParseInt(value, 4)
-      if (newValue < 1) {
-        console.warn('Invalid RAM value, using minimum of 1GB')
-        return
-      }
-      
-      // Get plan base RAM safely
-      let planBaseRam = currentPlan.ram
-      if (typeof planBaseRam === 'string') {
-        planBaseRam = safeParseInt(planBaseRam, 4)
-      } else if (typeof planBaseRam !== 'number' || isNaN(planBaseRam)) {
-        planBaseRam = 4
-      }
-
-      // Calculate additional RAM needed
-      const additional = Math.max(0, newValue - planBaseRam)
-      
-      console.log('💾 RAM calculation:', {
-        requestedValue: newValue,
-        planBaseRam,
-        additionalNeeded: additional
-      })
-      
-      setAdditionalRam(additional)
-    } catch (error) {
-      console.error('Error setting RAM allocation:', error)
-    }
+    console.log('✅ Session retrieved successfully')
+    
+    res.json({
+      sessionId: session.id,
+      customerEmail: session.customer_email,
+      amountTotal: session.amount_total,
+      currency: session.currency,
+      paymentStatus: session.payment_status,
+      metadata: session.metadata,
+      subscriptionId: session.subscription?.id,
+      customerId: session.customer?.id
+    })
+    
+  } catch (error) {
+    console.error('❌ Error retrieving session:', error)
+    res.status(500).json({ 
+      error: 'Failed to retrieve session data',
+      message: error.message 
+    })
   }
+})
 
-  const configProps = {
-    serverName,
-    setServerName,
-    minecraftVersion,
-    setMinecraftVersion,
-    selectedServerType,
-    setSelectedServerType,
-    maxPlayers,
-    setMaxPlayers,
-    ramAllocation: totalRam,
-    setRamAllocation: handleRamAllocationChange,
-    viewDistance,
-    setViewDistance,
-    enableWhitelist,
-    setEnableWhitelist,
-    enablePvp,
-    setEnablePvp,
-    selectedPlugins,
-    togglePlugin,
-    currentPlan,
-    availableServerTypes: getAvailableServerTypes(),
-    availablePlugins: getAvailablePlugins(),
-    additionalRam: safeParseInt(additionalRam, 0), // Ensure it's always a number
-    setAdditionalRam: (value) => setAdditionalRam(safeParseInt(value, 0)),
-    totalMonthlyCost,
-    customerEmail,
-    setCustomerEmail
-  }
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('❌ Unhandled error:', err)
+  res.status(500).json({ 
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+  })
+})
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900/30 to-slate-900">
-      {/* Animated Background */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute top-20 left-10 w-32 h-32 bg-blue-500/10 rounded-full blur-xl animate-pulse"></div>
-        <div className="absolute bottom-32 right-20 w-40 h-40 bg-purple-500/10 rounded-full blur-xl animate-pulse" style={{animationDelay: '1s'}}></div>
-        <div className="absolute top-1/3 right-1/4 w-24 h-24 bg-green-500/10 rounded-full blur-xl animate-pulse" style={{animationDelay: '2s'}}></div>
-      </div>
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({ 
+    error: 'Endpoint not found',
+    path: req.originalUrl,
+    method: req.method
+  })
+})
 
-      {/* Header */}
-      <Header onBackToDashboard={handleBackToDashboard} />
-
-      {/* Content */}
-      <div className={`container mx-auto px-4 py-8 relative z-10 ${
-        isMobile ? 'pt-20' : 'pt-8'
-      }`}>
-        <div className="max-w-7xl mx-auto">
-          {/* Mobile Back Button */}
-          {isMobile && (
-            <div className="mb-6">
-              <button 
-                onClick={handleBackToDashboard}
-                className="flex items-center gap-3 px-4 py-3 text-white hover:bg-white/10 rounded-xl transition-all duration-200 hover:scale-105 border border-white/20 backdrop-blur-sm"
-              >
-                <span className="text-xl">🦆</span>
-                <span className="font-medium">Back to Home</span>
-              </button>
-            </div>
-          )}
-
-          {/* Page Header */}
-          <div className="text-center mb-8 md:mb-12">
-            <div className="inline-flex items-center gap-2 bg-slate-800/50 backdrop-blur-sm rounded-full px-4 md:px-6 py-2 md:py-3 mb-4 md:mb-6 border border-slate-700/50">
-              <Crown size={16} className="text-yellow-400 md:w-5 md:h-5" />
-              <span className="text-gray-300 text-xs md:text-sm font-medium">Server Configuration</span>
-            </div>
-            
-            <h1 className="text-3xl md:text-5xl lg:text-6xl font-black text-white mb-4 md:mb-6 leading-tight px-2">
-              Configure Your
-              <span className="block bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent"> Dream Server</span>
-            </h1>
-            
-            <p className="text-base md:text-xl text-gray-300 max-w-2xl mx-auto mb-4 px-4">
-              Customize every aspect of your Minecraft server with our AI-powered configuration system
-            </p>
-            
-            {serverName && (
-              <div className="inline-flex items-center gap-2 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 backdrop-blur-sm rounded-full px-4 md:px-6 py-2 md:py-3 border border-cyan-500/30 mx-4">
-                <span className="text-cyan-400 font-semibold text-sm md:text-lg">"{serverName}"</span>
-              </div>
-            )}
-          </div>
-
-          {/* Email Collection */}
-          <div className="max-w-md mx-auto mb-8">
-            <div className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 rounded-xl p-6">
-              <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
-                📧 Contact Information
-              </h3>
-              <p className="text-gray-300 text-sm mb-4">
-                We'll use this email to send you server details and important updates.
-              </p>
-              <input
-                type="email"
-                placeholder="your.email@example.com"
-                value={customerEmail}
-                onChange={(e) => setCustomerEmail(e.target.value)}
-                className="w-full px-4 py-3 bg-slate-900/50 border border-slate-600/50 rounded-xl text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
-                required
-              />
-              {!customerEmail.trim() && (
-                <p className="text-red-400 text-xs mt-2">Email address is required</p>
-              )}
-            </div>
-          </div>
-
-          {/* Debug Panel (remove in production) */}
-          {process.env.NODE_ENV === 'development' && (
-            <div className="max-w-md mx-auto mb-8 p-4 bg-yellow-900/20 border border-yellow-500/30 rounded-xl">
-              <h4 className="text-yellow-400 font-bold mb-2">🐛 Debug Info</h4>
-              <div className="text-xs text-yellow-200 space-y-1">
-                <div>Plan RAM: {currentPlan.ram} ({typeof currentPlan.ram})</div>
-                <div>Additional RAM: {additionalRam} ({typeof additionalRam})</div>
-                <div>Total RAM: {totalRam} ({typeof totalRam})</div>
-                <div>Is Total RAM valid: {!isNaN(totalRam) && totalRam > 0 ? '✅' : '❌'}</div>
-              </div>
-            </div>
-          )}
-
-          {/* Layout */}
-          <div className="space-y-6 lg:space-y-0 lg:grid lg:grid-cols-4 lg:gap-8">
-            {/* Sidebar with Plan Selection */}
-            <div className="lg:col-span-1 order-2 lg:order-1">
-              <PlanSelector 
-                selectedPlan={selectedPlan}
-                setSelectedPlan={setSelectedPlan}
-                currentPlan={currentPlan}
-                maxPlayers={maxPlayers}
-                selectedPlugins={selectedPlugins}
-                totalMonthlyCost={totalMonthlyCost}
-                totalRam={totalRam}
-                additionalRam={safeParseInt(additionalRam, 0)}
-                setAdditionalRam={(value) => setAdditionalRam(safeParseInt(value, 0))}
-              />
-            </div>
-
-            {/* Main Configuration Area */}
-            <div className="lg:col-span-3 order-1 lg:order-2">
-              <ConfigurationTabs 
-                activeTab={activeTab}
-                setActiveTab={setActiveTab}
-                {...configProps}
-              />
-            </div>
-          </div>
-
-          <DeploySection 
-            currentPlan={currentPlan}
-            onDeploy={handleDeployServer}
-            isDeploying={isDeploying}
-            serverName={serverName}
-            selectedServerType={selectedServerType}
-            minecraftVersion={minecraftVersion}
-            totalMonthlyCost={totalMonthlyCost}
-            totalRam={totalRam}
-            customerEmail={customerEmail}
-          />
-        </div>
-      </div>
-    </div>
-  )
-}
+// Start server
+app.listen(PORT, () => {
+  console.log('\n🦆 ===== GOOSE HOSTING API SERVER =====')
+  console.log(`🚀 Server running on port ${PORT}`)
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`)
+  console.log(`🔑 Stripe configured: ${!!process.env.STRIPE_SECRET_KEY}`)
+  console.log(`🪝 Webhook configured: ${!!process.env.STRIPE_WEBHOOK_SECRET}`)
+  console.log('======================================\n')
+})
