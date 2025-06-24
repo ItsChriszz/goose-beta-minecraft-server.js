@@ -197,6 +197,31 @@ app.post('/create-checkout-session', async (req, res) => {
     // Create Stripe checkout session
     console.log('\n🔄 Creating Stripe checkout session...')
     
+    // Debug logging for metadata validation
+    console.log('🔎 Validating metadata values before sending to Stripe...')
+    const metadataToCheck = {
+      planId: String(planId || ''),
+      serverName: String(serverConfig.serverName || ''),
+      serverType: String(serverConfig.serverType || ''),
+      minecraftVersion: String(serverConfig.minecraftVersion || ''),
+      totalRam: Number.isFinite(totalRam) ? String(totalRam) : '0',
+      maxPlayers: Number.isFinite(maxPlayers) ? String(maxPlayers) : '0',
+      viewDistance: Number.isFinite(viewDistance) ? String(viewDistance) : '0',
+      enableWhitelist: String(serverConfig.enableWhitelist ?? false),
+      enablePvp: String(serverConfig.enablePvp ?? true),
+      selectedPlugins: Array.isArray(serverConfig.selectedPlugins)
+        ? String(serverConfig.selectedPlugins.length)
+        : '0',
+      customerEmail: String(serverConfig.customerEmail || ''),
+      totalPrice: Number.isFinite(totalPrice) ? totalPrice.toFixed(2) : '0.00'
+    }
+
+    for (const [key, value] of Object.entries(metadataToCheck)) {
+      const parsed = parseInt(value)
+      const isNumeric = !isNaN(parsed)
+      console.log(`- ${key}: "${value}" (${typeof value}) → ${isNumeric ? '✅ Valid integer (' + parsed + ')' : '❌ INVALID (NaN)'}`)
+    }
+    
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       mode: 'subscription',
@@ -220,45 +245,43 @@ app.post('/create-checkout-session', async (req, res) => {
       ],
       success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/configure/${encodeURIComponent(serverConfig.serverName)}`,
-metadata: {
-  planId: String(planId || ''),
-  serverName: String(serverConfig.serverName || ''),
-  serverType: String(serverConfig.serverType || ''),
-  minecraftVersion: String(serverConfig.minecraftVersion || ''),
-  totalRam: Number.isFinite(totalRam) ? String(totalRam) : '0',
-  maxPlayers: Number.isFinite(maxPlayers) ? String(maxPlayers) : '0',
-  viewDistance: Number.isFinite(viewDistance) ? String(viewDistance) : '0',
-  enableWhitelist: String(serverConfig.enableWhitelist ?? false),
-  enablePvp: String(serverConfig.enablePvp ?? true),
-  selectedPlugins: Array.isArray(serverConfig.selectedPlugins)
-    ? String(serverConfig.selectedPlugins.length)
-    : '0',
-  customerEmail: String(serverConfig.customerEmail || ''),
-  totalPrice: Number.isFinite(totalPrice) ? totalPrice.toFixed(2) : '0.00'
-}
-
-subscription_data: {
-  metadata: {
-    planId: String(planId || ''),
-    serverName: String(serverConfig.serverName || ''),
-    totalRam: Number.isFinite(totalRam) ? String(totalRam) : '0',
-    serverConfig: JSON.stringify({
-      serverName: String(serverConfig.serverName || ''),
-      serverType: String(serverConfig.serverType || ''),
-      minecraftVersion: String(serverConfig.minecraftVersion || ''),
-      totalRam: Number.isFinite(totalRam) ? totalRam : 0,
-      maxPlayers: Number.isFinite(maxPlayers) ? maxPlayers : 0,
-      viewDistance: Number.isFinite(viewDistance) ? viewDistance : 0,
-      enableWhitelist: Boolean(serverConfig.enableWhitelist),
-      enablePvp: Boolean(serverConfig.enablePvp),
-      selectedPlugins: Array.isArray(serverConfig.selectedPlugins) 
-        ? serverConfig.selectedPlugins 
-        : [],
-      customerEmail: String(serverConfig.customerEmail || '')
-    })
-  }
-}
-
+      metadata: {
+        planId: String(planId || ''),
+        serverName: String(serverConfig.serverName || ''),
+        serverType: String(serverConfig.serverType || ''),
+        minecraftVersion: String(serverConfig.minecraftVersion || ''),
+        totalRam: Number.isFinite(totalRam) ? String(totalRam) : '0',
+        maxPlayers: Number.isFinite(maxPlayers) ? String(maxPlayers) : '0',
+        viewDistance: Number.isFinite(viewDistance) ? String(viewDistance) : '0',
+        enableWhitelist: String(serverConfig.enableWhitelist ?? false),
+        enablePvp: String(serverConfig.enablePvp ?? true),
+        selectedPlugins: Array.isArray(serverConfig.selectedPlugins)
+          ? String(serverConfig.selectedPlugins.length)
+          : '0',
+        customerEmail: String(serverConfig.customerEmail || ''),
+        totalPrice: Number.isFinite(totalPrice) ? totalPrice.toFixed(2) : '0.00'
+      },
+      subscription_data: {
+        metadata: {
+          planId: String(planId || ''),
+          serverName: String(serverConfig.serverName || ''),
+          totalRam: Number.isFinite(totalRam) ? String(totalRam) : '0',
+          serverConfig: JSON.stringify({
+            serverName: String(serverConfig.serverName || ''),
+            serverType: String(serverConfig.serverType || ''),
+            minecraftVersion: String(serverConfig.minecraftVersion || ''),
+            totalRam: Number.isFinite(totalRam) ? totalRam : 0,
+            maxPlayers: Number.isFinite(maxPlayers) ? maxPlayers : 0,
+            viewDistance: Number.isFinite(viewDistance) ? viewDistance : 0,
+            enableWhitelist: Boolean(serverConfig.enableWhitelist),
+            enablePvp: Boolean(serverConfig.enablePvp),
+            selectedPlugins: Array.isArray(serverConfig.selectedPlugins) 
+              ? serverConfig.selectedPlugins 
+              : [],
+            customerEmail: String(serverConfig.customerEmail || '')
+          })
+        }
+      }
     })
 
     console.log('✅ Stripe session created successfully!')
