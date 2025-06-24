@@ -1,4 +1,4 @@
-// server.js - Fixed Version with Database Storage and Better Error Handling
+// server.js - Simple Fix Without Database
 
 require('dotenv').config();
 const express = require('express');
@@ -6,12 +6,10 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const axios = require('axios');
-const fs = require('fs').promises;
-const path = require('path');
 
 const PORT = process.env.PORT || 3001;
 
-// Validate required environment variables on startup FIRST
+// Validate required environment variables
 if (!process.env.STRIPE_SECRET_KEY) {
   console.error('❌ STRIPE_SECRET_KEY environment variable is required');
   process.exit(1);
@@ -32,7 +30,6 @@ if (!process.env.PTERODACTYL_API_URL) {
   process.exit(1);
 }
 
-// THEN declare constants after validation
 const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
 const PTERODACTYL_BASE = process.env.PTERODACTYL_API_URL;
 
@@ -50,46 +47,8 @@ app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
 app.use(bodyParser.json());
 app.use(cors(corsOptions));
 
-// IMPROVED: File-based database for persistence (use real database in production)
-const DB_FILE = path.join(__dirname, 'server_database.json');
-
-// Database helper functions
-async function loadDatabase() {
-  try {
-    const data = await fs.readFile(DB_FILE, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      // File doesn't exist, return empty database
-      return {};
-    }
-    console.error('Error loading database:', error);
-    return {};
-  }
-}
-
-async function saveDatabase(data) {
-  try {
-    await fs.writeFile(DB_FILE, JSON.stringify(data, null, 2));
-  } catch (error) {
-    console.error('Error saving database:', error);
-  }
-}
-
-async function storeServerDetails(sessionId, serverDetails) {
-  const db = await loadDatabase();
-  db[sessionId] = {
-    ...serverDetails,
-    timestamp: new Date().toISOString()
-  };
-  await saveDatabase(db);
-  console.log('✅ Server details stored for session:', sessionId);
-}
-
-async function getServerDetails(sessionId) {
-  const db = await loadDatabase();
-  return db[sessionId] || null;
-}
+// SIMPLE: In-memory storage for server details with session metadata
+const serverDatabase = new Map();
 
 // Generate random password
 function generatePassword(length = 12) {
@@ -399,12 +358,11 @@ async function createPterodactylServer(session) {
       isNewUser: userInfo.isNewUser,
       panelUrl: PTERODACTYL_BASE.replace('/api/application', ''),
       createdAt: new Date().toISOString(),
-      sessionId: session.id,
-      paymentStatus: 'completed'
+      sessionId: session.id
     };
 
-    // IMPROVED: Store in persistent database
-    await storeServerDetails(session.id, serverDetails);
+    // Store in our database (use real database in production)
+    serverDatabase.set(session.id, serverDetails);
 
     // If plugins are selected and it's a supported server type, we could install them here
     if (selectedPlugins.length > 0 && (serverType === 'paper' || serverType === 'spigot')) {
@@ -434,7 +392,7 @@ async function createPterodactylServer(session) {
   }
 }
 
-// IMPROVED: Stripe Webhook Handler with better error handling
+// Stripe Webhook Handler
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -445,7 +403,7 @@ app.post('/webhook', async (req, res) => {
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
-    console.log(`🔔 Received event: ${event.type} - ${event.id}`);
+    console.log(`🔔 Received event: ${event.type}`);
   } catch (err) {
     console.error('❌ Webhook verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -455,31 +413,7 @@ app.post('/webhook', async (req, res) => {
     switch (event.type) {
       case 'checkout.session.completed':
         console.log('💳 Payment completed, creating server...');
-        console.log('Session ID:', event.data.object.id);
-        console.log('Payment Status:', event.data.object.payment_status);
-        
-        // IMPROVED: Only create server if payment was successful
-        if (event.data.object.payment_status === 'paid') {
-          try {
-            const result = await createPterodactylServer(event.data.object);
-            console.log('✅ Server deployment completed successfully');
-          } catch (serverError) {
-            console.error('❌ Server creation failed, but payment was successful:', serverError);
-            
-            // Store error details for later troubleshooting
-            const errorDetails = {
-              sessionId: event.data.object.id,
-              error: serverError.message,
-              timestamp: new Date().toISOString(),
-              paymentStatus: 'paid',
-              serverStatus: 'failed'
-            };
-            
-            await storeServerDetails(event.data.object.id, errorDetails);
-          }
-        } else {
-          console.log('⚠️ Payment not completed, skipping server creation');
-        }
+        await createPterodactylServer(event.data.object);
         break;
         
       case 'invoice.payment_succeeded':
@@ -515,35 +449,36 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// IMPROVED: Get server details for checkout page with better error handling
+// SIMPLE: Get server details for checkout page
 app.get('/server-details/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     
     console.log('🔍 Retrieving server details for session:', sessionId);
     
-    // Get from our persistent database
-    const serverDetails = await getServerDetails(sessionId);
+    // Get from our database
+    const serverDetails = serverDatabase.get(sessionId);
     
     if (!serverDetails) {
-      console.log('❌ Server details not found for session:', sessionId);
-      
-      // Check if this is a valid Stripe session
+      // SIMPLE: Check if the Stripe session exists and payment is complete
       try {
         const session = await stripe.checkout.sessions.retrieve(sessionId);
         
-        // Session exists but no server details yet - might still be processing
         if (session.payment_status === 'paid') {
+          // Payment is complete but server not created yet
           return res.status(202).json({ 
             message: 'Server is being deployed. Please wait...',
             status: 'processing',
-            sessionId: sessionId
+            sessionId: sessionId,
+            paymentStatus: session.payment_status
           });
         } else {
+          // Payment not complete yet
           return res.status(400).json({ 
             error: 'Payment not completed',
             status: 'payment_pending',
-            sessionId: sessionId
+            sessionId: sessionId,
+            paymentStatus: session.payment_status
           });
         }
       } catch (stripeError) {
@@ -553,68 +488,18 @@ app.get('/server-details/:sessionId', async (req, res) => {
     }
 
     // Also get the Stripe session for additional info
-    try {
-      const session = await stripe.checkout.sessions.retrieve(sessionId);
-      
-      const response = {
-        ...serverDetails,
-        paymentStatus: session.payment_status,
-        amountTotal: session.amount_total,
-        currency: session.currency
-      };
-
-      console.log('✅ Server details retrieved successfully for session:', sessionId);
-      res.json(response);
-    } catch (stripeError) {
-      console.error('⚠️ Could not retrieve Stripe session, returning server details only:', stripeError.message);
-      res.json(serverDetails);
-    }
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
     
+    const response = {
+      ...serverDetails,
+      paymentStatus: session.payment_status,
+      amountTotal: session.amount_total,
+      currency: session.currency
+    };
+
+    res.json(response);
   } catch (err) {
     console.error('❌ Error retrieving server details:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// IMPROVED: Polling endpoint for checking deployment status
-app.get('/deployment-status/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const serverDetails = await getServerDetails(sessionId);
-    
-    if (!serverDetails) {
-      // Check if payment is completed but server not yet created
-      const session = await stripe.checkout.sessions.retrieve(sessionId);
-      
-      if (session.payment_status === 'paid') {
-        return res.json({
-          status: 'processing',
-          message: 'Payment completed, deploying server...'
-        });
-      } else {
-        return res.json({
-          status: 'payment_pending',
-          message: 'Waiting for payment completion'
-        });
-      }
-    }
-    
-    if (serverDetails.error) {
-      return res.json({
-        status: 'failed',
-        message: 'Server deployment failed',
-        error: serverDetails.error
-      });
-    }
-    
-    return res.json({
-      status: 'completed',
-      message: 'Server deployed successfully',
-      serverId: serverDetails.serverId
-    });
-    
-  } catch (err) {
-    console.error('❌ Error checking deployment status:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -672,6 +557,9 @@ app.post('/create-checkout-session', async (req, res) => {
 
     console.log('✅ Checkout session created:', session.id);
     console.log('📋 Metadata sent to Stripe:', metadata);
+    console.log('✅ Checkout session created with URLs:');
+    console.log('- Success URL:', `${process.env.FRONTEND_URL}/checkout/success?session_id=${session.id}`);
+    console.log('- Cancel URL:', `${process.env.FRONTEND_URL}/setup/${encodeURIComponent(serverConfig.serverName)}`);
 
     res.json({ sessionId: session.id });
   } catch (err) {
