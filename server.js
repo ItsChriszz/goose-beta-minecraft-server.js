@@ -534,6 +534,9 @@ app.post('/create-checkout-session', async (req, res) => {
 
     console.log('✅ Checkout session created:', session.id);
     console.log('📋 Metadata sent to Stripe:', metadata);
+    console.log('✅ Checkout session created with URLs:');
+console.log('- Success URL:', `${process.env.FRONTEND_URL}/checkout/success?session_id=${session.id}`);
+console.log('- Cancel URL:', `${process.env.FRONTEND_URL}/setup/${encodeURIComponent(serverConfig.serverName)}`);
 
     res.json({ sessionId: session.id });
   } catch (err) {
