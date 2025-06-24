@@ -37,6 +37,47 @@ const safeParseInt = (value, fallback = 0) => {
   return parsed
 }
 
+// Safe metadata creation helper
+const createSafeMetadata = (serverConfig, planId, totalRam, maxPlayers, viewDistance, totalPrice) => {
+  const selectedPluginsCount = Array.isArray(serverConfig.selectedPlugins) 
+    ? serverConfig.selectedPlugins.length 
+    : 0;
+
+  const safeMetadata = {
+    planId: String(planId || ''),
+    serverName: String(serverConfig.serverName || ''),
+    serverType: String(serverConfig.serverType || ''),
+    minecraftVersion: String(serverConfig.minecraftVersion || ''),
+    totalRam: String(Number.isFinite(totalRam) ? totalRam : 0),
+    maxPlayers: String(Number.isFinite(maxPlayers) ? maxPlayers : 0),
+    viewDistance: String(Number.isFinite(viewDistance) ? viewDistance : 0),
+    enableWhitelist: String(Boolean(serverConfig.enableWhitelist)),
+    enablePvp: String(Boolean(serverConfig.enablePvp)),
+    selectedPlugins: String(selectedPluginsCount),
+    customerEmail: String(serverConfig.customerEmail || ''),
+    totalPrice: String(Number.isFinite(totalPrice) ? totalPrice.toFixed(2) : '0.00')
+  };
+
+  // Validate all metadata values
+  console.log('🔎 Validating metadata values before sending to Stripe...');
+  for (const [key, value] of Object.entries(safeMetadata)) {
+    if (key === 'totalRam' || key === 'maxPlayers' || key === 'viewDistance' || key === 'selectedPlugins') {
+      const parsed = parseInt(value);
+      const isValid = !isNaN(parsed) && Number.isInteger(parsed);
+      console.log(`- ${key}: "${value}" → ${isValid ? '✅ Valid (' + parsed + ')' : '❌ INVALID (NaN)'}`);
+      
+      if (!isValid) {
+        console.error(`❌ CRITICAL: Invalid metadata value for ${key}: ${value}`);
+        throw new Error(`Invalid metadata value for ${key}: ${value}`);
+      }
+    } else {
+      console.log(`- ${key}: "${value}" → ✅ String value`);
+    }
+  }
+
+  return safeMetadata;
+};
+
 // Main checkout session creation endpoint
 app.post('/create-checkout-session', async (req, res) => {
   try {
@@ -96,8 +137,42 @@ app.post('/create-checkout-session', async (req, res) => {
       console.log('  - Is number:', typeof serverConfig.viewDistance === 'number')
       console.log('  - Is NaN:', isNaN(serverConfig.viewDistance))
 
+      console.log('selectedPlugins validation:')
+      console.log('  - Raw value:', serverConfig.selectedPlugins)
+      console.log('  - Type:', typeof serverConfig.selectedPlugins)
+      console.log('  - Is array:', Array.isArray(serverConfig.selectedPlugins))
+      console.log('  - Length:', Array.isArray(serverConfig.selectedPlugins) ? serverConfig.selectedPlugins.length : 'N/A')
+
     } else {
       console.log('❌ NO SERVER CONFIG RECEIVED!')
+    }
+
+    // Basic validation
+    if (!serverConfig || !planId) {
+      console.error('❌ Missing required fields:', { serverConfig: !!serverConfig, planId: !!planId })
+      return res.status(400).json({ 
+        error: 'Missing required fields: serverConfig and planId are required' 
+      })
+    }
+
+    // Validate required serverConfig fields
+    const requiredFields = ['serverName', 'serverType', 'minecraftVersion', 'customerEmail']
+    const missingFields = requiredFields.filter(field => !serverConfig[field])
+    
+    if (missingFields.length > 0) {
+      console.error('❌ Missing required serverConfig fields:', missingFields)
+      return res.status(400).json({ 
+        error: `Missing required fields: ${missingFields.join(', ')}` 
+      })
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(serverConfig.customerEmail)) {
+      console.error('❌ Invalid email format:', serverConfig.customerEmail)
+      return res.status(400).json({ 
+        error: 'Invalid email format' 
+      })
     }
 
     // Immediate validation with detailed logging
@@ -136,34 +211,6 @@ app.post('/create-checkout-session', async (req, res) => {
 
     console.log('===== END BACKEND REQUEST LOG =====\n')
     // 🚀 COMPREHENSIVE LOGGING ENDS HERE
-
-    // Basic validation
-    if (!serverConfig || !planId) {
-      console.error('❌ Missing required fields:', { serverConfig: !!serverConfig, planId: !!planId })
-      return res.status(400).json({ 
-        error: 'Missing required fields: serverConfig and planId are required' 
-      })
-    }
-
-    // Validate required serverConfig fields
-    const requiredFields = ['serverName', 'serverType', 'minecraftVersion', 'customerEmail']
-    const missingFields = requiredFields.filter(field => !serverConfig[field])
-    
-    if (missingFields.length > 0) {
-      console.error('❌ Missing required serverConfig fields:', missingFields)
-      return res.status(400).json({ 
-        error: `Missing required fields: ${missingFields.join(', ')}` 
-      })
-    }
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(serverConfig.customerEmail)) {
-      console.error('❌ Invalid email format:', serverConfig.customerEmail)
-      return res.status(400).json({ 
-        error: 'Invalid email format' 
-      })
-    }
 
     // Define plan pricing
     const planPricing = {
@@ -232,30 +279,34 @@ app.post('/create-checkout-session', async (req, res) => {
     console.log('  Is finite:', Number.isFinite(totalPrice))
     console.log('  Is NaN:', isNaN(totalPrice))
     
-    // Debug logging for metadata validation
-    console.log('🔎 Validating metadata values before sending to Stripe...')
-    const metadataToCheck = {
-      planId: String(planId || ''),
+    // 🛡️ CREATE SAFE METADATA - This fixes the NaN issue!
+    let safeMetadata;
+    try {
+      safeMetadata = createSafeMetadata(serverConfig, planId, totalRam, maxPlayers, viewDistance, totalPrice);
+      console.log('✅ Safe metadata created successfully');
+    } catch (metadataError) {
+      console.error('❌ CRITICAL: Failed to create safe metadata:', metadataError.message);
+      return res.status(400).json({ 
+        error: 'Invalid data for metadata creation',
+        details: metadataError.message
+      });
+    }
+    
+    // Create subscription metadata with safe serverConfig
+    const safeServerConfigForSubscription = {
       serverName: String(serverConfig.serverName || ''),
       serverType: String(serverConfig.serverType || ''),
       minecraftVersion: String(serverConfig.minecraftVersion || ''),
-      totalRam: Number.isFinite(totalRam) ? String(totalRam) : '0',
-      maxPlayers: Number.isFinite(maxPlayers) ? String(maxPlayers) : '0',
-      viewDistance: Number.isFinite(viewDistance) ? String(viewDistance) : '0',
-      enableWhitelist: String(serverConfig.enableWhitelist ?? false),
-      enablePvp: String(serverConfig.enablePvp ?? true),
-      selectedPlugins: Array.isArray(serverConfig.selectedPlugins)
-        ? String(serverConfig.selectedPlugins.length)
-        : '0',
-      customerEmail: String(serverConfig.customerEmail || ''),
-      totalPrice: Number.isFinite(totalPrice) ? totalPrice.toFixed(2) : '0.00'
-    }
-
-    for (const [key, value] of Object.entries(metadataToCheck)) {
-      const parsed = parseInt(value)
-      const isNumeric = !isNaN(parsed)
-      console.log(`- ${key}: "${value}" (${typeof value}) → ${isNumeric ? '✅ Valid integer (' + parsed + ')' : '❌ INVALID (NaN)'}`)
-    }
+      totalRam: totalRam,
+      maxPlayers: maxPlayers,
+      viewDistance: viewDistance,
+      enableWhitelist: Boolean(serverConfig.enableWhitelist),
+      enablePvp: Boolean(serverConfig.enablePvp),
+      selectedPlugins: Array.isArray(serverConfig.selectedPlugins) 
+        ? serverConfig.selectedPlugins 
+        : [],
+      customerEmail: String(serverConfig.customerEmail || '')
+    };
     
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -280,39 +331,13 @@ app.post('/create-checkout-session', async (req, res) => {
       ],
       success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/configure/${encodeURIComponent(serverConfig.serverName)}`,
-      metadata: {
-        planId: String(planId || ''),
-        serverName: String(serverConfig.serverName || ''),
-        serverType: String(serverConfig.serverType || ''),
-        minecraftVersion: String(serverConfig.minecraftVersion || ''),
-        totalRam: String(totalRam),
-        maxPlayers: String(maxPlayers),
-        viewDistance: String(viewDistance),
-        enableWhitelist: String(serverConfig.enableWhitelist ?? false),
-        enablePvp: String(serverConfig.enablePvp ?? true),
-        selectedPlugins: String(Array.isArray(serverConfig.selectedPlugins) ? serverConfig.selectedPlugins.length : 0),
-        customerEmail: String(serverConfig.customerEmail || ''),
-        totalPrice: totalPrice.toFixed(2) // ✅ Now guaranteed to be a valid price string
-      },
+      metadata: safeMetadata, // ✅ Using safe metadata that won't cause NaN errors
       subscription_data: {
         metadata: {
           planId: String(planId || ''),
           serverName: String(serverConfig.serverName || ''),
           totalRam: String(totalRam),
-          serverConfig: JSON.stringify({
-            serverName: String(serverConfig.serverName || ''),
-            serverType: String(serverConfig.serverType || ''),
-            minecraftVersion: String(serverConfig.minecraftVersion || ''),
-            totalRam: totalRam,
-            maxPlayers: maxPlayers,
-            viewDistance: viewDistance,
-            enableWhitelist: Boolean(serverConfig.enableWhitelist),
-            enablePvp: Boolean(serverConfig.enablePvp),
-            selectedPlugins: Array.isArray(serverConfig.selectedPlugins) 
-              ? serverConfig.selectedPlugins 
-              : [],
-            customerEmail: String(serverConfig.customerEmail || '')
-          })
+          serverConfig: JSON.stringify(safeServerConfigForSubscription)
         }
       }
     })
