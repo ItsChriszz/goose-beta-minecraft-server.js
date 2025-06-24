@@ -8,6 +8,12 @@ const axios = require('axios');
 const PORT = process.env.PORT || 3001;
 const API_BASE_URL = process.env.API_BASE_URL || 'https://stripeapibeta.goosehosting.com';
 
+// Environment variable check with detailed logging
+console.log('🔍 Environment Check:');
+console.log('STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? 'Set (' + process.env.STRIPE_SECRET_KEY.substring(0, 8) + '...)' : 'NOT SET');
+console.log('PTERODACTYL_API_KEY:', process.env.PTERODACTYL_API_KEY ? 'Set' : 'NOT SET');
+console.log('FRONTEND_URL:', process.env.FRONTEND_URL || 'NOT SET');
+
 // Validate environment variables
 const requiredEnvVars = [
   'STRIPE_SECRET_KEY',
@@ -219,8 +225,8 @@ const createMinecraftServer = async (session) => {
       serverId: server.attributes.id,
       identifier: server.attributes.identifier,
       name: server.attributes.name,
-      ip: allocation.attributes.ip,
-      port: allocation.attributes.port,
+      serverIp: allocation.attributes.ip,
+      serverPort: allocation.attributes.port,
       username: user.username,
       password: user.isNew ? user.password : undefined,
       panelUrl: process.env.PTERODACTYL_API_URL.replace('/api/application', ''),
@@ -460,8 +466,8 @@ app.get('/server-details/:sessionId', async (req, res) => {
         metadata: {
           ...session.metadata,
           serverCreated: 'true',
-          serverIp: serverDetails.ip,
-          serverPort: serverDetails.port,
+          serverIp: serverDetails.serverIp,
+          serverPort: serverDetails.serverPort,
           serverId: serverDetails.serverId,
           serverIdentifier: serverDetails.identifier
         }
@@ -515,7 +521,44 @@ app.get('/server-details/:sessionId', async (req, res) => {
   }
 });
 
-// Enhanced debug endpoint
+// Enhanced debug endpoint to check sessions
+app.get('/debug/sessions', async (req, res) => {
+  try {
+    console.log('📋 Listing recent Stripe sessions...');
+    
+    const sessions = await stripe.checkout.sessions.list({
+      limit: 10,
+      expand: ['data.customer']
+    });
+    
+    const sessionSummary = sessions.data.map(session => ({
+      id: session.id,
+      status: session.status,
+      payment_status: session.payment_status,
+      customer_email: session.customer_details?.email,
+      amount: session.amount_total,
+      created: new Date(session.created * 1000).toISOString(),
+      metadata_keys: Object.keys(session.metadata || {})
+    }));
+    
+    res.json({
+      total_sessions: sessions.data.length,
+      sessions: sessionSummary,
+      environment: {
+        stripe_key_type: process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_') ? 'test' : 'live'
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to list sessions:', error.message);
+    res.status(500).json({
+      error: error.message,
+      type: error.type
+    });
+  }
+});
+
+// Enhanced debug endpoint for specific sessions
 app.get('/debug/stripe/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -577,44 +620,7 @@ app.get('/debug/stripe/:sessionId', async (req, res) => {
   }
 });
 
-// New endpoint to list recent sessions for debugging
-app.get('/debug/sessions', async (req, res) => {
-  try {
-    console.log('📋 Listing recent Stripe sessions...');
-    
-    const sessions = await stripe.checkout.sessions.list({
-      limit: 10,
-      expand: ['data.customer']
-    });
-    
-    const sessionSummary = sessions.data.map(session => ({
-      id: session.id,
-      status: session.status,
-      payment_status: session.payment_status,
-      customer_email: session.customer_details?.email,
-      amount: session.amount_total,
-      created: new Date(session.created * 1000).toISOString(),
-      metadata_keys: Object.keys(session.metadata || {})
-    }));
-    
-    res.json({
-      total_sessions: sessions.data.length,
-      sessions: sessionSummary,
-      environment: {
-        stripe_key_type: process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_') ? 'test' : 'live'
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Failed to list sessions:', error.message);
-    res.status(500).json({
-      error: error.message,
-      type: error.type
-    });
-  }
-});
-
-// Stripe webhook handler (for future use)
+// Stripe webhook handler
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -653,7 +659,7 @@ app.post('/webhook', async (req, res) => {
   res.json({ received: true });
 });
 
-// Health check endpoint
+// Health check endpoint with full environment info
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy',
@@ -662,7 +668,16 @@ app.get('/health', (req, res) => {
     stripe_mode: process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_') ? 'test' : 'live',
     pterodactyl: process.env.PTERODACTYL_API_URL,
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    version: '2.0.0', // Updated version
+    endpoints: [
+      'POST /create-checkout-session',
+      'GET /server-details/:sessionId',
+      'GET /debug/stripe/:sessionId',
+      'GET /debug/sessions',
+      'GET /health',
+      'POST /webhook'
+    ]
   });
 });
 
@@ -677,7 +692,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
+// 404 handler with available endpoints
 app.use((req, res) => {
   console.log(`❌ 404 - Route not found: ${req.method} ${req.path}`);
   res.status(404).json({
@@ -692,7 +707,9 @@ app.use((req, res) => {
       'GET /debug/sessions',
       'GET /health',
       'POST /webhook'
-    ]
+    ],
+    message: 'The requested endpoint does not exist on this server',
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -705,6 +722,7 @@ app.listen(PORT, () => {
   console.log(`💳 Stripe mode: ${process.env.STRIPE_SECRET_KEY?.startsWith('sk_test') ? 'TEST' : 'LIVE'}`);
   console.log(`🎮 Pterodactyl API: ${process.env.PTERODACTYL_API_URL}`);
   console.log(`📧 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`📊 Version: 2.0.0 (Updated with debugging)`);
   console.log('==========================================');
   console.log('Available endpoints:');
   console.log('  POST /create-checkout-session');
