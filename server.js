@@ -247,6 +247,78 @@ const createMinecraftServer = async (session) => {
   }
 };
 
+// NEW FUNCTION: Handle checkout session completion
+async function handleCheckoutCompleted(session) {
+  console.log('🔄 Processing checkout session completion...');
+  
+  try {
+    await stripe.checkout.sessions.update(session.id, {
+      metadata: {
+        ...session.metadata,
+        checkoutCompleted: 'true',
+        checkoutCompletedAt: new Date().toISOString()
+      }
+    });
+    console.log('✅ Checkout session marked as completed');
+  } catch (error) {
+    console.error('❌ Failed to update checkout session:', error);
+  }
+}
+
+// NEW FUNCTION: Handle invoice payment - THIS IS WHERE SERVER CREATION HAPPENS
+async function handleInvoicePaymentSucceeded(invoice) {
+  console.log('🔄 Processing successful payment...');
+  
+  try {
+    // Get the subscription
+    const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
+    console.log('📋 Found subscription:', subscription.id);
+    
+    // Find the checkout session that created this subscription
+    const sessions = await stripe.checkout.sessions.list({
+      subscription: subscription.id,
+      limit: 1
+    });
+    
+    if (!sessions.data || sessions.data.length === 0) {
+      console.error('❌ No checkout session found for subscription:', subscription.id);
+      return;
+    }
+    
+    const session = sessions.data[0];
+    console.log('🎯 Found checkout session:', session.id);
+    
+    // Check if server already created
+    if (session.metadata.serverCreated === 'true') {
+      console.log('✅ Server already created for session:', session.id);
+      return;
+    }
+    
+    // Create the server now that payment is confirmed
+    console.log('🚀 Creating server for paid session...');
+    const serverDetails = await createMinecraftServer(session);
+    
+    // Update session metadata with server details
+    await stripe.checkout.sessions.update(session.id, {
+      metadata: {
+        ...session.metadata,
+        serverCreated: 'true',
+        serverIp: serverDetails.serverIp,
+        serverPort: serverDetails.serverPort,
+        serverId: serverDetails.serverId,
+        serverIdentifier: serverDetails.identifier,
+        paymentConfirmedAt: new Date().toISOString()
+      }
+    });
+    
+    console.log('✅ Server created and session updated for:', session.id);
+    
+  } catch (error) {
+    console.error('❌ Failed to process invoice payment:', error);
+    throw error;
+  }
+}
+
 // API Endpoints
 app.post('/create-checkout-session', async (req, res) => {
   try {
@@ -328,18 +400,15 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-// IMPROVED server-details endpoint with better debugging
+// ENHANCED server-details endpoint
 app.get('/server-details/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     
     console.log('='.repeat(50));
     console.log(`🔍 SERVER DETAILS REQUEST`);
-    console.log('='.repeat(50));
     console.log(`📋 Session ID: ${sessionId}`);
     console.log(`🕐 Timestamp: ${new Date().toISOString()}`);
-    console.log(`🌐 Request Origin: ${req.headers.origin || 'Unknown'}`);
-    console.log(`🔑 Stripe Key Type: ${process.env.STRIPE_SECRET_KEY?.substring(0, 8)}...`);
     console.log('='.repeat(50));
     
     // Validate session ID format
@@ -347,91 +416,53 @@ app.get('/server-details/:sessionId', async (req, res) => {
       console.log('❌ Invalid session ID format:', sessionId);
       return res.status(400).json({ 
         error: 'Invalid session ID format',
-        code: 'INVALID_SESSION_ID',
-        expected: 'Session ID should start with cs_',
-        received: sessionId
+        code: 'INVALID_SESSION_ID'
       });
     }
 
-    // Step 1: Try to retrieve session from Stripe
+    // Retrieve session from Stripe
     let session;
     try {
-      console.log('🔄 Retrieving session from Stripe...');
       session = await stripe.checkout.sessions.retrieve(sessionId, {
         expand: ['customer', 'subscription']
       });
-      
-      console.log('✅ Session retrieved successfully:');
-      console.log(`   - ID: ${session.id}`);
-      console.log(`   - Status: ${session.status}`);
-      console.log(`   - Payment Status: ${session.payment_status}`);
-      console.log(`   - Amount: $${(session.amount_total / 100).toFixed(2)}`);
-      console.log(`   - Customer Email: ${session.customer_details?.email || 'N/A'}`);
-      console.log(`   - Created: ${new Date(session.created * 1000).toISOString()}`);
-      console.log(`   - Metadata Keys: [${Object.keys(session.metadata || {}).join(', ')}]`);
-      
+      console.log('✅ Session retrieved successfully');
     } catch (stripeError) {
-      console.error('❌ Stripe session retrieval failed:');
-      console.error(`   - Error Type: ${stripeError.type}`);
-      console.error(`   - Error Code: ${stripeError.code}`);
-      console.error(`   - Error Message: ${stripeError.message}`);
-      console.error(`   - Request ID: ${stripeError.requestId || 'N/A'}`);
-      
-      if (stripeError.type === 'StripeInvalidRequestError') {
-        // Check if it's a test/live key mismatch
-        const isTestSession = sessionId.includes('test_');
-        const isTestKey = process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_');
-        
-        if (isTestSession && !isTestKey) {
-          return res.status(404).json({ 
-            error: 'Test session with live Stripe key',
-            code: 'STRIPE_KEY_MISMATCH',
-            details: 'You are trying to access a test session with a live Stripe key. Please use a test key.',
-            sessionType: 'test',
-            keyType: 'live'
-          });
-        } else if (!isTestSession && isTestKey) {
-          return res.status(404).json({ 
-            error: 'Live session with test Stripe key',
-            code: 'STRIPE_KEY_MISMATCH',
-            details: 'You are trying to access a live session with a test Stripe key. Please use a live key.',
-            sessionType: 'live',
-            keyType: 'test'
-          });
-        }
-        
-        return res.status(404).json({ 
-          error: 'Session not found in Stripe',
-          code: 'STRIPE_SESSION_NOT_FOUND',
-          details: stripeError.message,
-          sessionId: sessionId,
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      return res.status(500).json({
-        error: 'Stripe API error',
-        code: 'STRIPE_API_ERROR',
-        details: stripeError.message
+      console.error('❌ Stripe session retrieval failed:', stripeError.message);
+      return res.status(404).json({ 
+        error: 'Session not found',
+        code: 'STRIPE_SESSION_NOT_FOUND'
       });
     }
 
-    // Step 2: Check payment status
-    console.log('💳 Checking payment status...');
+    // Check session status
+    console.log(`💳 Session status: ${session.status}`);
+    console.log(`💰 Payment status: ${session.payment_status}`);
+    
+    // Case 1: Session not completed yet
+    if (session.status !== 'complete') {
+      console.log('⏳ Session not completed yet');
+      return res.status(202).json({ 
+        status: 'session_pending',
+        message: 'Checkout session not completed yet'
+      });
+    }
+    
+    // Case 2: Session complete but payment still processing
     if (session.payment_status !== 'paid') {
-      console.log(`💸 Payment not completed: ${session.payment_status}`);
+      console.log('💸 Payment still processing');
       return res.status(202).json({ 
         status: 'payment_pending',
         paymentStatus: session.payment_status,
-        sessionId: session.id,
-        message: 'Payment is still being processed'
+        message: 'Payment is being processed'
       });
     }
-
-    // Step 3: Check if server already created
-    console.log('🏗️ Checking server creation status...');
+    
+    // Case 3: Payment complete, check server status
+    console.log('✅ Payment completed, checking server status...');
+    
     if (session.metadata.serverCreated === 'true') {
-      console.log('✅ Server already created, returning existing details');
+      console.log('🎉 Server already created, returning details');
       return res.json({
         status: 'ready',
         server: {
@@ -439,6 +470,7 @@ app.get('/server-details/:sessionId', async (req, res) => {
           serverIp: session.metadata.serverIp,
           serverPort: session.metadata.serverPort,
           serverId: session.metadata.serverId,
+          identifier: session.metadata.serverIdentifier,
           panelUrl: process.env.PTERODACTYL_API_URL.replace('/api/application', ''),
           serverType: session.metadata.serverType,
           minecraftVersion: session.metadata.minecraftVersion,
@@ -451,72 +483,63 @@ app.get('/server-details/:sessionId', async (req, res) => {
         }
       });
     }
-
-    // Step 4: Create server since payment is complete
-    console.log('🚀 Payment completed, creating server...');
-    console.log('📝 Session metadata for server creation:');
-    console.log(JSON.stringify(session.metadata, null, 2));
     
-    try {
-      const serverDetails = await createMinecraftServer(session);
+    // Case 4: Payment complete but server not created yet
+    console.log('🔄 Payment complete, server creation pending...');
+    
+    // Check if subscription exists and is active
+    if (session.subscription) {
+      const subscription = await stripe.subscriptions.retrieve(session.subscription);
+      console.log(`📋 Subscription status: ${subscription.status}`);
       
-      // Step 5: Update session metadata with server details
-      console.log('📝 Updating session metadata with server details...');
-      await stripe.checkout.sessions.update(sessionId, {
-        metadata: {
-          ...session.metadata,
-          serverCreated: 'true',
-          serverIp: serverDetails.serverIp,
-          serverPort: serverDetails.serverPort,
-          serverId: serverDetails.serverId,
-          serverIdentifier: serverDetails.identifier
+      if (subscription.status === 'active') {
+        // Payment is confirmed, trigger server creation
+        console.log('🚀 Triggering server creation...');
+        
+        try {
+          const serverDetails = await createMinecraftServer(session);
+          
+          // Update session metadata
+          await stripe.checkout.sessions.update(sessionId, {
+            metadata: {
+              ...session.metadata,
+              serverCreated: 'true',
+              serverIp: serverDetails.serverIp,
+              serverPort: serverDetails.serverPort,
+              serverId: serverDetails.serverId,
+              serverIdentifier: serverDetails.identifier
+            }
+          });
+
+          console.log('✅ Server created successfully');
+          return res.json({
+            status: 'ready',
+            server: serverDetails
+          });
+          
+        } catch (serverError) {
+          console.error('❌ Server creation failed:', serverError.message);
+          return res.status(500).json({
+            error: 'Server deployment failed',
+            details: serverError.message,
+            code: 'SERVER_CREATION_FAILED'
+          });
         }
-      });
-
-      console.log('✅ Server created and session updated successfully');
-      console.log('🎉 Server deployment complete!');
-
-      res.json({
-        status: 'ready',
-        server: serverDetails
-      });
-
-    } catch (serverError) {
-      console.error('❌ Server creation failed:');
-      console.error(`   - Error: ${serverError.message}`);
-      console.error(`   - Stack: ${serverError.stack}`);
-      
-      // Try to update session with error info
-      try {
-        await stripe.checkout.sessions.update(sessionId, {
-          metadata: {
-            ...session.metadata,
-            serverCreated: 'false',
-            serverError: serverError.message,
-            errorTimestamp: new Date().toISOString()
-          }
-        });
-      } catch (updateError) {
-        console.error('❌ Failed to update session with error:', updateError.message);
       }
-      
-      return res.status(500).json({
-        error: 'Server deployment failed',
-        details: serverError.message,
-        code: 'SERVER_CREATION_FAILED',
-        sessionId: sessionId,
-        timestamp: new Date().toISOString()
-      });
     }
+    
+    // Case 5: Still waiting for payment confirmation
+    console.log('⏳ Waiting for payment confirmation...');
+    return res.status(202).json({ 
+      status: 'payment_confirming',
+      message: 'Payment received, waiting for confirmation. This usually takes 30-60 seconds.'
+    });
 
   } catch (error) {
-    console.error('❌ Unexpected server details error:', error);
-    
+    console.error('❌ Unexpected error:', error);
     res.status(500).json({ 
       error: 'Internal server error',
-      details: error.message,
-      code: 'SERVER_DETAILS_ERROR',
-      timestamp: new Date().toISOString()
+      code: 'SERVER_DETAILS_ERROR'
     });
   }
 });
@@ -620,7 +643,7 @@ app.get('/debug/stripe/:sessionId', async (req, res) => {
   }
 });
 
-// Stripe webhook handler
+// ENHANCED Stripe webhook handler
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -638,22 +661,33 @@ app.post('/webhook', async (req, res) => {
 
   console.log(`📨 Webhook received: ${event.type}`);
   
-  // Handle different event types
-  switch (event.type) {
-    case 'checkout.session.completed':
-      console.log('✅ Checkout session completed:', event.data.object.id);
-      break;
-    case 'customer.subscription.created':
-      console.log('📋 Subscription created:', event.data.object.id);
-      break;
-    case 'invoice.payment_succeeded':
-      console.log('💰 Payment succeeded:', event.data.object.id);
-      break;
-    case 'invoice.payment_failed':
-      console.log('❌ Payment failed:', event.data.object.id);
-      break;
-    default:
-      console.log(`🤷 Unhandled event type: ${event.type}`);
+  try {
+    // Handle different event types
+    switch (event.type) {
+      case 'checkout.session.completed':
+        console.log('✅ Checkout session completed:', event.data.object.id);
+        await handleCheckoutCompleted(event.data.object);
+        break;
+        
+      case 'invoice.payment_succeeded':
+        console.log('💰 Payment succeeded for invoice:', event.data.object.id);
+        await handleInvoicePaymentSucceeded(event.data.object);
+        break;
+        
+      case 'customer.subscription.created':
+        console.log('📋 Subscription created:', event.data.object.id);
+        break;
+        
+      case 'invoice.payment_failed':
+        console.log('❌ Payment failed:', event.data.object.id);
+        break;
+        
+      default:
+        console.log(`🤷 Unhandled event type: ${event.type}`);
+    }
+  } catch (error) {
+    console.error('❌ Webhook processing error:', error);
+    return res.status(500).json({ error: 'Webhook processing failed' });
   }
 
   res.json({ received: true });
@@ -669,7 +703,7 @@ app.get('/health', (req, res) => {
     pterodactyl: process.env.PTERODACTYL_API_URL,
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    version: '2.0.0', // Updated version
+    version: '2.1.0', // Updated version
     endpoints: [
       'POST /create-checkout-session',
       'GET /server-details/:sessionId',
@@ -722,7 +756,7 @@ app.listen(PORT, () => {
   console.log(`💳 Stripe mode: ${process.env.STRIPE_SECRET_KEY?.startsWith('sk_test') ? 'TEST' : 'LIVE'}`);
   console.log(`🎮 Pterodactyl API: ${process.env.PTERODACTYL_API_URL}`);
   console.log(`📧 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`📊 Version: 2.0.0 (Updated with debugging)`);
+  console.log(`📊 Version: 2.1.0 (Enhanced webhook handling)`);
   console.log('==========================================');
   console.log('Available endpoints:');
   console.log('  POST /create-checkout-session');
