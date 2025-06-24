@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express = require('express');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
@@ -7,7 +6,7 @@ const cors = require('cors');
 const axios = require('axios');
 
 const PORT = process.env.PORT || 3001;
-const DOMAIN = 'beta.goosehosting.com';
+const API_BASE_URL = process.env.API_BASE_URL || 'https://stripeapibeta.goosehosting.com';
 
 // Validate environment variables
 const requiredEnvVars = [
@@ -25,168 +24,168 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
-const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
-const PTERODACTYL_BASE = process.env.PTERODACTYL_API_URL;
-
 const app = express();
 
-// Middleware configuration
-app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
-app.use(bodyParser.json());
-app.use(cors({
+// Enhanced CORS configuration
+const corsOptions = {
   origin: process.env.FRONTEND_URL,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization',
+    'X-Requested-With',
+    'Accept'
+  ],
+  credentials: true,
+  optionsSuccessStatus: 200 // For legacy browser support
+};
+
+// Middleware
+app.use(bodyParser.json());
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
+
+// Stripe webhook needs raw body
+app.use('/webhook', 
+  bodyParser.raw({ type: 'application/json' }),
+  cors(corsOptions)
+);
 
 // Helper functions
-const generatePassword = (length = 16) => {
-  const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  return Array.from({ length }, () => 
-    charset.charAt(Math.floor(Math.random() * charset.length))
-    .join('');
+const generateCredentials = () => {
+  const password = require('crypto').randomBytes(16).toString('hex');
+  const username = `user${Math.floor(Math.random() * 10000)}`;
+  return { username, password };
 };
 
-const generateUsername = (email) => {
-  const base = email.split('@')[0].replace(/[^a-z0-9]/gi, '').toLowerCase();
-  return `${base}${Math.floor(Math.random() * 1000)}`;
-};
-
-// Pterodactyl API functions
-const createOrGetUser = async (email) => {
+// Pterodactyl API wrapper
+const pterodactylRequest = async (method, endpoint, data = null) => {
   try {
-    // Check for existing user
-    const { data } = await axios.get(`${PTERODACTYL_BASE}/users`, {
+    const response = await axios({
+      method,
+      url: `${process.env.PTERODACTYL_API_URL}${endpoint}`,
       headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        Accept: 'application/json'
-      }
+        'Authorization': `Bearer ${process.env.PTERODACTYL_API_KEY}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      data
     });
+    return response.data;
+  } catch (error) {
+    console.error('Pterodactyl API Error:', {
+      endpoint,
+      status: error.response?.status,
+      data: error.response?.data
+    });
+    throw error;
+  }
+};
 
-    const existingUser = data.data.find(u => u.attributes.email === email);
+// Server creation logic
+const createMinecraftServer = async (session) => {
+  const { customer_details, metadata } = session;
+  const email = customer_details?.email || metadata?.customerEmail;
+  
+  if (!email) {
+    throw new Error('No customer email available');
+  }
+
+  // 1. Find or create user
+  let user;
+  try {
+    const users = await pterodactylRequest('get', '/users');
+    const existingUser = users.data.find(u => u.attributes.email === email);
+    
     if (existingUser) {
-      return {
-        userId: existingUser.attributes.id,
+      user = {
+        id: existingUser.attributes.id,
         username: existingUser.attributes.username,
-        isNewUser: false
+        isNew: false
+      };
+    } else {
+      const { username, password } = generateCredentials();
+      const newUser = await pterodactylRequest('post', '/users', {
+        email,
+        username,
+        first_name: 'Minecraft',
+        last_name: 'Player',
+        password
+      });
+      user = {
+        id: newUser.attributes.id,
+        username,
+        password,
+        isNew: true
       };
     }
-
-    // Create new user
-    const username = generateUsername(email);
-    const password = generatePassword();
-    
-    const { data: newUser } = await axios.post(`${PTERODACTYL_BASE}/users`, {
-      email,
-      username,
-      first_name: 'Minecraft',
-      last_name: 'Player',
-      password
-    }, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    return {
-      userId: newUser.attributes.id,
-      username,
-      password,
-      isNewUser: true
-    };
-
   } catch (error) {
-    console.error('Pterodactyl user error:', error.response?.data || error.message);
-    throw error;
+    console.error('User creation failed:', error);
+    throw new Error('Failed to setup user account');
   }
-};
 
-const createPterodactylServer = async (session) => {
-  try {
-    const email = session.customer_details?.email || session.metadata?.customerEmail;
-    if (!email) throw new Error('No customer email found');
+  // 2. Get server resources
+  const [eggs, nodes] = await Promise.all([
+    pterodactylRequest('get', '/nests/1/eggs'),
+    pterodactylRequest('get', '/nodes')
+  ]);
 
-    const user = await createOrGetUser(email);
-    const { data: eggs } = await axios.get(`${PTERODACTYL_BASE}/nests/1/eggs`, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        Accept: 'application/json'
-      }
-    });
+  const minecraftEgg = eggs.data.find(e => 
+    e.attributes.name.toLowerCase().includes('minecraft')
+  );
+  const node = nodes.data[0];
+  const allocations = await pterodactylRequest(
+    'get', 
+    `/nodes/${node.attributes.id}/allocations`
+  );
+  const allocation = allocations.data.find(a => !a.attributes.assigned);
 
-    const minecraftEgg = eggs.data.find(e => 
-      e.attributes.name.toLowerCase().includes('minecraft'));
-    if (!minecraftEgg) throw new Error('Minecraft egg not found');
-
-    const { data: nodes } = await axios.get(`${PTERODACTYL_BASE}/nodes`, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        Accept: 'application/json'
-      }
-    });
-
-    const nodeId = nodes.data[0].attributes.id;
-    const { data: allocs } = await axios.get(`${PTERODACTYL_BASE}/nodes/${nodeId}/allocations`, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        Accept: 'application/json'
-      }
-    });
-
-    const allocation = allocs.data.find(a => !a.attributes.assigned);
-    if (!allocation) throw new Error('No available allocations');
-
-    const metadata = session.metadata || {};
-    const ram = parseInt(metadata.totalRam) || 4;
-
-    const { data: server } = await axios.post(`${PTERODACTYL_BASE}/servers`, {
-      name: metadata.serverName || `mc-${Date.now()}`,
-      user: user.userId,
-      egg: minecraftEgg.attributes.id,
-      docker_image: minecraftEgg.attributes.docker_image,
-      startup: minecraftEgg.attributes.startup,
-      environment: {
-        SERVER_JARFILE: 'server.jar',
-        VERSION: metadata.minecraftVersion || 'latest',
-        SERVER_MEMORY: ram * 1024
-      },
-      limits: {
-        memory: ram * 1024,
-        disk: 5120,
-        io: 500,
-        cpu: 0
-      },
-      feature_limits: {
-        databases: 1,
-        allocations: 1,
-        backups: 3
-      },
-      allocation: {
-        default: allocation.attributes.id
-      }
-    }, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    return {
-      serverId: server.attributes.id,
-      serverName: server.attributes.name,
-      serverIp: allocation.attributes.ip,
-      serverPort: allocation.attributes.port,
-      username: user.username,
-      password: user.isNewUser ? user.password : undefined,
-      panelUrl: PTERODACTYL_BASE.replace('/api/application', '')
-    };
-
-  } catch (error) {
-    console.error('Server creation failed:', error.response?.data || error.message);
-    throw error;
+  if (!minecraftEgg || !allocation) {
+    throw new Error('Server resources unavailable');
   }
+
+  // 3. Create server
+  const serverConfig = {
+    name: metadata.serverName || `mc-${Date.now()}`,
+    user: user.id,
+    egg: minecraftEgg.attributes.id,
+    docker_image: minecraftEgg.attributes.docker_image,
+    startup: minecraftEgg.attributes.startup,
+    environment: {
+      SERVER_JARFILE: 'server.jar',
+      VERSION: metadata.minecraftVersion || 'latest',
+      SERVER_MEMORY: (parseInt(metadata.totalRam) || 4) * 1024
+    },
+    limits: {
+      memory: (parseInt(metadata.totalRam) || 4) * 1024,
+      disk: 5120,
+      io: 500,
+      cpu: 0
+    },
+    feature_limits: {
+      databases: 1,
+      allocations: 1,
+      backups: 3
+    },
+    allocation: {
+      default: allocation.attributes.id
+    }
+  };
+
+  const server = await pterodactylRequest('post', '/servers', serverConfig);
+  
+  return {
+    serverId: server.attributes.id,
+    identifier: server.attributes.identifier,
+    name: server.attributes.name,
+    ip: allocation.attributes.ip,
+    port: allocation.attributes.port,
+    username: user.username,
+    password: user.isNew ? user.password : undefined,
+    panelUrl: process.env.PTERODACTYL_API_URL.replace('/api/application', '')
+  };
 };
 
 // API Endpoints
@@ -197,7 +196,7 @@ app.post('/create-checkout-session', async (req, res) => {
     if (!serverConfig?.serverName) {
       return res.status(400).json({ 
         error: 'Server name is required',
-        status: 'invalid_request'
+        code: 'MISSING_SERVER_NAME'
       });
     }
 
@@ -208,8 +207,7 @@ app.post('/create-checkout-session', async (req, res) => {
           currency: 'usd',
           product_data: {
             name: `Minecraft Server - ${serverConfig.serverName}`,
-            description: serverConfig.serverType ? 
-              `${serverConfig.serverType} server` : 'Minecraft server'
+            description: serverConfig.serverType || 'Minecraft Server'
           },
           unit_amount: 1000, // $10.00
           recurring: { interval: 'month' }
@@ -220,24 +218,24 @@ app.post('/create-checkout-session', async (req, res) => {
       success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL}`,
       metadata: {
-        serverName: serverConfig.serverName,
-        serverType: serverConfig.serverType || 'paper',
-        minecraftVersion: serverConfig.minecraftVersion || 'latest',
+        ...serverConfig,
+        customerEmail: serverConfig.customerEmail || '',
         totalRam: String(serverConfig.totalRam || 4),
-        customerEmail: serverConfig.customerEmail || ''
+        minecraftVersion: serverConfig.minecraftVersion || 'latest',
+        serverType: serverConfig.serverType || 'paper'
       }
     });
 
     res.json({ 
       sessionId: session.id,
-      url: session.url
+      url: session.url 
     });
 
   } catch (error) {
     console.error('Checkout error:', error);
     res.status(500).json({ 
       error: error.message,
-      status: 'server_error'
+      code: 'CHECKOUT_ERROR'
     });
   }
 });
@@ -249,43 +247,61 @@ app.get('/server-details/:sessionId', async (req, res) => {
     if (!sessionId.startsWith('cs_')) {
       return res.status(400).json({ 
         error: 'Invalid session ID format',
-        status: 'invalid_id'
+        code: 'INVALID_SESSION_ID'
       });
     }
 
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    
+    // Retrieve session with expanded customer details
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['customer']
+    });
+
+    if (!session) {
+      return res.status(404).json({ 
+        error: 'Session not found',
+        code: 'SESSION_NOT_FOUND'
+      });
+    }
+
+    // Handle payment status
     if (session.payment_status !== 'paid') {
       return res.status(402).json({ 
         status: 'payment_required',
-        paymentStatus: session.payment_status
+        paymentStatus: session.payment_status,
+        sessionId: session.id
       });
     }
 
+    // Check if server already created
     if (session.metadata.serverCreated === 'true') {
       return res.json({
         status: 'ready',
-        serverName: session.metadata.serverName,
-        serverIp: session.metadata.serverIp,
-        serverPort: session.metadata.serverPort,
-        panelUrl: PTERODACTYL_BASE.replace('/api/application', '')
+        server: {
+          name: session.metadata.serverName,
+          ip: session.metadata.serverIp,
+          port: session.metadata.serverPort,
+          panelUrl: process.env.PTERODACTYL_API_URL.replace('/api/application', '')
+        }
       });
     }
 
-    const server = await createPterodactylServer(session);
+    // Create server since payment is complete
+    const serverDetails = await createMinecraftServer(session);
     
+    // Update session metadata
     await stripe.checkout.sessions.update(sessionId, {
       metadata: {
         ...session.metadata,
         serverCreated: 'true',
-        serverIp: server.serverIp,
-        serverPort: server.serverPort
+        serverIp: serverDetails.ip,
+        serverPort: serverDetails.port,
+        serverId: serverDetails.serverId
       }
     });
 
     res.json({
       status: 'ready',
-      ...server
+      server: serverDetails
     });
 
   } catch (error) {
@@ -293,18 +309,19 @@ app.get('/server-details/:sessionId', async (req, res) => {
     
     if (error.type === 'StripeInvalidRequestError') {
       return res.status(404).json({ 
-        error: 'Session not found',
-        status: 'not_found'
+        error: 'Session not found in Stripe',
+        code: 'STRIPE_SESSION_NOT_FOUND'
       });
     }
     
     res.status(500).json({ 
       error: error.message,
-      status: 'server_error'
+      code: 'SERVER_DETAILS_ERROR'
     });
   }
 });
 
+// Stripe webhook handler
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -317,25 +334,37 @@ app.post('/webhook', async (req, res) => {
     );
   } catch (err) {
     console.error('Webhook verification failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).json({ error: 'Invalid signature' });
   }
 
+  // Log event but don't process - we handle creation via /server-details
   console.log(`Stripe event: ${event.type}`);
   res.json({ received: true });
 });
 
+// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy',
-    domain: DOMAIN,
+    api: API_BASE_URL,
+    stripe: process.env.STRIPE_SECRET_KEY ? 'configured' : 'missing',
+    pterodactyl: process.env.PTERODACTYL_API_URL,
     timestamp: new Date().toISOString()
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Global error handler:', err);
+  res.status(500).json({
+    error: 'Internal server error',
+    code: 'INTERNAL_SERVER_ERROR'
   });
 });
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🦆 Goose Hosting API running on ${DOMAIN}:${PORT}`);
-  console.log(`🔗 Pterodactyl: ${PTERODACTYL_BASE}`);
-  console.log(`🌐 Frontend: ${process.env.FRONTEND_URL}`);
-  console.log(`💳 Stripe mode: ${process.env.STRIPE_SECRET_KEY.startsWith('sk_test_') ? 'TEST' : 'LIVE'}`);
+  console.log(`🚀 Server running on ${API_BASE_URL}`);
+  console.log(`🔗 CORS enabled for: ${process.env.FRONTEND_URL}`);
+  console.log(`💳 Stripe mode: ${process.env.STRIPE_SECRET_KEY?.startsWith('sk_test') ? 'TEST' : 'LIVE'}`);
 });
