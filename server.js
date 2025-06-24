@@ -185,7 +185,20 @@ app.post('/create-checkout-session', async (req, res) => {
     // Calculate total price based on RAM
     const additionalRam = Math.max(0, totalRam - plan.ram)
     const additionalRamCost = additionalRam * 2.25 // $2.25 per GB
-    const totalPrice = plan.basePrice + additionalRamCost
+    let totalPrice = plan.basePrice + additionalRamCost
+
+    // 🛡️ CRITICAL FIX: Ensure totalPrice is always a valid number
+    if (!Number.isFinite(totalPrice) || isNaN(totalPrice) || totalPrice < 0) {
+      console.error('❌ CRITICAL: Invalid totalPrice calculated!')
+      console.error('  - Plan base price:', plan.basePrice)
+      console.error('  - Additional RAM:', additionalRam)
+      console.error('  - Additional RAM cost:', additionalRamCost)
+      console.error('  - Calculated total:', totalPrice)
+      
+      // Fallback to base plan price
+      totalPrice = plan.basePrice
+      console.log('🔄 Using fallback price:', totalPrice)
+    }
 
     console.log('\n💰 PRICING CALCULATION:')
     console.log('Plan:', planId, `($${plan.basePrice}/mo, ${plan.ram}GB base)`)
@@ -194,8 +207,30 @@ app.post('/create-checkout-session', async (req, res) => {
     console.log('Additional RAM cost:', `$${additionalRamCost.toFixed(2)}/mo`)
     console.log('Total monthly price:', `$${totalPrice.toFixed(2)}/mo`)
 
-    // Create Stripe checkout session
+    // 🛡️ CRITICAL FIX: Validate unit_amount before sending to Stripe
+    const unitAmountInCents = Math.round(totalPrice * 100)
+    if (!Number.isInteger(unitAmountInCents) || unitAmountInCents < 50) { // Stripe minimum is $0.50
+      console.error('❌ CRITICAL: Invalid unit_amount for Stripe!')
+      console.error('  - Total price:', totalPrice)
+      console.error('  - Unit amount (cents):', unitAmountInCents)
+      return res.status(400).json({ 
+        error: 'Invalid pricing calculation',
+        totalPrice,
+        unitAmountInCents
+      })
+    }
+
     console.log('\n🔄 Creating Stripe checkout session...')
+    console.log('💰 Unit amount (cents):', unitAmountInCents)
+
+    // 🧪 FINAL VALIDATION BEFORE STRIPE
+    console.log('🔬 FINAL VALIDATION BEFORE STRIPE:')
+    console.log('  totalPrice type:', typeof totalPrice)
+    console.log('  totalPrice value:', totalPrice)
+    console.log('  totalPrice * 100:', totalPrice * 100)
+    console.log('  Math.round(totalPrice * 100):', Math.round(totalPrice * 100))
+    console.log('  Is finite:', Number.isFinite(totalPrice))
+    console.log('  Is NaN:', isNaN(totalPrice))
     
     // Debug logging for metadata validation
     console.log('🔎 Validating metadata values before sending to Stripe...')
@@ -235,7 +270,7 @@ app.post('/create-checkout-session', async (req, res) => {
               description: `Minecraft Server: ${serverConfig.serverName} (${totalRam}GB RAM, ${maxPlayers} players)`,
               images: ['https://goosehosting.com/logo-stripe.png'],
             },
-            unit_amount: Math.round(totalPrice * 100), // Convert to cents
+            unit_amount: unitAmountInCents, // ✅ Now guaranteed to be a valid integer
             recurring: {
               interval: 'month',
             },
@@ -250,29 +285,27 @@ app.post('/create-checkout-session', async (req, res) => {
         serverName: String(serverConfig.serverName || ''),
         serverType: String(serverConfig.serverType || ''),
         minecraftVersion: String(serverConfig.minecraftVersion || ''),
-        totalRam: Number.isFinite(totalRam) ? String(totalRam) : '0',
-        maxPlayers: Number.isFinite(maxPlayers) ? String(maxPlayers) : '0',
-        viewDistance: Number.isFinite(viewDistance) ? String(viewDistance) : '0',
+        totalRam: String(totalRam),
+        maxPlayers: String(maxPlayers),
+        viewDistance: String(viewDistance),
         enableWhitelist: String(serverConfig.enableWhitelist ?? false),
         enablePvp: String(serverConfig.enablePvp ?? true),
-        selectedPlugins: Array.isArray(serverConfig.selectedPlugins)
-          ? String(serverConfig.selectedPlugins.length)
-          : '0',
+        selectedPlugins: String(Array.isArray(serverConfig.selectedPlugins) ? serverConfig.selectedPlugins.length : 0),
         customerEmail: String(serverConfig.customerEmail || ''),
-        totalPrice: Number.isFinite(totalPrice) ? totalPrice.toFixed(2) : '0.00'
+        totalPrice: totalPrice.toFixed(2) // ✅ Now guaranteed to be a valid price string
       },
       subscription_data: {
         metadata: {
           planId: String(planId || ''),
           serverName: String(serverConfig.serverName || ''),
-          totalRam: Number.isFinite(totalRam) ? String(totalRam) : '0',
+          totalRam: String(totalRam),
           serverConfig: JSON.stringify({
             serverName: String(serverConfig.serverName || ''),
             serverType: String(serverConfig.serverType || ''),
             minecraftVersion: String(serverConfig.minecraftVersion || ''),
-            totalRam: Number.isFinite(totalRam) ? totalRam : 0,
-            maxPlayers: Number.isFinite(maxPlayers) ? maxPlayers : 0,
-            viewDistance: Number.isFinite(viewDistance) ? viewDistance : 0,
+            totalRam: totalRam,
+            maxPlayers: maxPlayers,
+            viewDistance: viewDistance,
             enableWhitelist: Boolean(serverConfig.enableWhitelist),
             enablePvp: Boolean(serverConfig.enablePvp),
             selectedPlugins: Array.isArray(serverConfig.selectedPlugins) 
