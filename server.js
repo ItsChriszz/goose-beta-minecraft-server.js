@@ -334,25 +334,47 @@ app.post('/create-checkout-session', async (req, res) => {
       });
     }
 
-    // Calculate price based on plan
+    // FIXED: Plan pricing with proper validation
     const planPrices = {
       starter: 499, // $4.99
       pro: 999,     // $9.99
       elite: 1999   // $19.99
     };
 
-    // Get base RAM for each plan
+    // FIXED: Get base RAM for each plan - ensure these match your frontend
     const planBaseRam = {
-      starter: 2,
-      pro: 4,
-      elite: 8
+      starter: 2,  // Must match ServerData.js
+      pro: 4,      // Must match ServerData.js
+      elite: 8     // Must match ServerData.js
     };
 
-    const basePrice = planPrices[planId] || planPrices.pro;
-    const basePlanRam = planBaseRam[planId] || planBaseRam.pro;
+    // FIXED: Validate planId exists
+    if (!planPrices[planId]) {
+      console.error('❌ Invalid plan ID:', planId);
+      return res.status(400).json({
+        error: 'Invalid plan ID',
+        code: 'INVALID_PLAN_ID',
+        validPlans: Object.keys(planPrices),
+        received: planId
+      });
+    }
+
+    const basePrice = planPrices[planId];
+    const basePlanRam = planBaseRam[planId];
     
-    // Fix: Use totalRam from frontend, calculate additional properly
-    const totalRam = parseInt(serverConfig.totalRam) || basePlanRam;
+    // FIXED: Proper totalRam handling with validation
+    const totalRam = parseInt(serverConfig.totalRam);
+    if (isNaN(totalRam) || totalRam < 1) {
+      console.error('❌ Invalid totalRam:', serverConfig.totalRam);
+      return res.status(400).json({
+        error: 'Invalid total RAM value',
+        code: 'INVALID_TOTAL_RAM',
+        received: serverConfig.totalRam,
+        expected: 'positive integer'
+      });
+    }
+
+    // FIXED: Calculate additional RAM properly
     const additionalRam = Math.max(0, totalRam - basePlanRam);
     const additionalRamCost = Math.round(additionalRam * 225); // $2.25 per GB = 225 cents
     
@@ -368,13 +390,36 @@ app.post('/create-checkout-session', async (req, res) => {
       totalPrice: totalPrice + ' cents'
     });
 
-    // Validation: Make sure totalPrice is a valid integer
+    // FIXED: Validation with better error messages
     if (!Number.isInteger(totalPrice) || totalPrice <= 0) {
-      console.error('❌ Invalid total price:', totalPrice);
+      console.error('❌ Invalid total price calculation:', {
+        totalPrice,
+        basePrice,
+        additionalRamCost,
+        totalRam,
+        basePlanRam,
+        additionalRam
+      });
       return res.status(400).json({
-        error: 'Invalid pricing calculation',
-        code: 'INVALID_PRICE',
-        details: { totalPrice, basePrice, additionalRamCost }
+        error: 'Invalid pricing calculation - resulted in invalid price',
+        code: 'INVALID_PRICE_CALCULATION',
+        details: { 
+          totalPrice, 
+          basePrice, 
+          additionalRamCost,
+          calculation: `${basePrice} + ${additionalRamCost} = ${totalPrice}`
+        }
+      });
+    }
+
+    // FIXED: Better validation for minimum price (Stripe requires at least $0.50 USD)
+    if (totalPrice < 50) {
+      console.error('❌ Price too low for Stripe:', totalPrice);
+      return res.status(400).json({
+        error: 'Price must be at least $0.50 USD',
+        code: 'PRICE_TOO_LOW',
+        totalPrice: totalPrice,
+        minimumRequired: 50
       });
     }
 
@@ -387,7 +432,7 @@ app.post('/create-checkout-session', async (req, res) => {
             name: `Minecraft Server - ${serverConfig.serverName}`,
             description: `${planId.charAt(0).toUpperCase() + planId.slice(1)} plan with ${totalRam}GB RAM`
           },
-          unit_amount: totalPrice, // This must be a valid integer
+          unit_amount: totalPrice, // This MUST be a valid integer > 0
           recurring: { interval: 'month' }
         },
         quantity: 1,
@@ -422,6 +467,23 @@ app.post('/create-checkout-session', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Checkout error:', error);
+    
+    // FIXED: Better error handling for Stripe errors
+    if (error.type === 'StripeInvalidRequestError') {
+      console.error('❌ Stripe validation error:', {
+        message: error.message,
+        param: error.param,
+        code: error.code
+      });
+      
+      return res.status(400).json({ 
+        error: `Stripe validation error: ${error.message}`,
+        code: 'STRIPE_VALIDATION_ERROR',
+        param: error.param,
+        stripeCode: error.code
+      });
+    }
+    
     res.status(500).json({ 
       error: error.message,
       code: 'CHECKOUT_ERROR'
@@ -439,9 +501,9 @@ app.post('/debug/pricing', async (req, res) => {
     console.log('Input planId:', planId);
     
     const planPrices = {
-      starter: 499, // $4.99
-      pro: 999,     // $9.99
-      elite: 1999   // $19.99
+      starter: 499,
+      pro: 999,
+      elite: 1999
     };
 
     const planBaseRam = {
@@ -450,25 +512,38 @@ app.post('/debug/pricing', async (req, res) => {
       elite: 8
     };
 
-    const basePrice = planPrices[planId] || planPrices.pro;
-    const basePlanRam = planBaseRam[planId] || planBaseRam.pro;
+    // Check if plan exists
+    if (!planPrices[planId]) {
+      return res.status(400).json({
+        error: 'Invalid plan ID',
+        validPlans: Object.keys(planPrices),
+        received: planId
+      });
+    }
+
+    const basePrice = planPrices[planId];
+    const basePlanRam = planBaseRam[planId];
     
-    const totalRam = parseInt(serverConfig.totalRam) || basePlanRam;
-    const additionalRam = Math.max(0, totalRam - basePlanRam);
+    // Parse and validate totalRam
+    const totalRam = parseInt(serverConfig.totalRam);
+    const isValidRam = !isNaN(totalRam) && totalRam > 0;
+    
+    const additionalRam = isValidRam ? Math.max(0, totalRam - basePlanRam) : 0;
     const additionalRamCost = Math.round(additionalRam * 225);
-    
     const totalPrice = basePrice + additionalRamCost;
     
     const result = {
       inputs: {
         planId,
         totalRamFromFrontend: serverConfig.totalRam,
-        serverConfigType: typeof serverConfig.totalRam
+        serverConfigType: typeof serverConfig.totalRam,
+        totalRamParsed: totalRam,
+        isValidRam
       },
       calculations: {
         basePrice,
         basePlanRam,
-        totalRam,
+        totalRam: isValidRam ? totalRam : 'INVALID',
         additionalRam,
         additionalRamCost,
         totalPrice
@@ -476,9 +551,23 @@ app.post('/debug/pricing', async (req, res) => {
       validation: {
         isPriceInteger: Number.isInteger(totalPrice),
         isPricePositive: totalPrice > 0,
-        priceInDollars: (totalPrice / 100).toFixed(2)
-      }
+        isPriceValid: Number.isInteger(totalPrice) && totalPrice >= 50,
+        priceInDollars: (totalPrice / 100).toFixed(2),
+        meetsStripeMinimum: totalPrice >= 50
+      },
+      errors: []
     };
+    
+    // Add errors
+    if (!isValidRam) {
+      result.errors.push('Invalid totalRam - must be a positive integer');
+    }
+    if (!Number.isInteger(totalPrice)) {
+      result.errors.push('Total price calculation resulted in non-integer');
+    }
+    if (totalPrice < 50) {
+      result.errors.push('Price below Stripe minimum ($0.50)');
+    }
     
     console.log('📊 Pricing result:', JSON.stringify(result, null, 2));
     
@@ -486,7 +575,10 @@ app.post('/debug/pricing', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Debug pricing error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack 
+    });
   }
 });
 
@@ -793,7 +885,7 @@ app.get('/health', (req, res) => {
     pterodactyl: process.env.PTERODACTYL_API_URL,
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    version: '2.2.0', // Updated version
+    version: '2.3.0', // Updated version with fixes
     endpoints: [
       'POST /create-checkout-session',
       'GET /server-details/:sessionId',
@@ -848,7 +940,7 @@ app.listen(PORT, () => {
   console.log(`💳 Stripe mode: ${process.env.STRIPE_SECRET_KEY?.startsWith('sk_test') ? 'TEST' : 'LIVE'}`);
   console.log(`🎮 Pterodactyl API: ${process.env.PTERODACTYL_API_URL}`);
   console.log(`📧 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`📊 Version: 2.2.0 (Fixed pricing calculation)`);
+  console.log(`📊 Version: 2.3.0 (Fixed pricing calculation and validation)`);
   console.log('==========================================');
   console.log('Available endpoints:');
   console.log('  POST /create-checkout-session');
@@ -858,5 +950,27 @@ app.listen(PORT, () => {
   console.log('  POST /debug/pricing');
   console.log('  GET  /health');
   console.log('  POST /webhook');
+  console.log('==========================================');
+  
+  // Test the pricing calculation on startup
+  console.log('🧪 Testing pricing calculation...');
+  const testConfig = {
+    totalRam: 4,
+    serverName: 'test'
+  };
+  
+  const planPrices = { starter: 499, pro: 999, elite: 1999 };
+  const planBaseRam = { starter: 2, pro: 4, elite: 8 };
+  
+  for (const planId of Object.keys(planPrices)) {
+    const basePrice = planPrices[planId];
+    const basePlanRam = planBaseRam[planId];
+    const totalRam = parseInt(testConfig.totalRam);
+    const additionalRam = Math.max(0, totalRam - basePlanRam);
+    const additionalRamCost = Math.round(additionalRam * 225);
+    const totalPrice = basePrice + additionalRamCost;
+    
+    console.log(`  ${planId}: ${(totalPrice/100).toFixed(2)} (${totalPrice} cents) - ${totalRam}GB RAM`);
+  }
   console.log('==========================================');
 });
