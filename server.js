@@ -319,7 +319,7 @@ async function handleInvoicePaymentSucceeded(invoice) {
   }
 }
 
-// API Endpoints
+// FIXED API Endpoint - Create Checkout Session
 app.post('/create-checkout-session', async (req, res) => {
   try {
     console.log('💳 Creating checkout session...');
@@ -341,16 +341,42 @@ app.post('/create-checkout-session', async (req, res) => {
       elite: 1999   // $19.99
     };
 
+    // Get base RAM for each plan
+    const planBaseRam = {
+      starter: 2,
+      pro: 4,
+      elite: 8
+    };
+
     const basePrice = planPrices[planId] || planPrices.pro;
-    const additionalRamCost = Math.round((serverConfig.totalRam - parseInt(serverConfig.baseRam || '4')) * 225); // $2.25 per GB
-    const totalPrice = basePrice + Math.max(0, additionalRamCost);
+    const basePlanRam = planBaseRam[planId] || planBaseRam.pro;
+    
+    // Fix: Use totalRam from frontend, calculate additional properly
+    const totalRam = parseInt(serverConfig.totalRam) || basePlanRam;
+    const additionalRam = Math.max(0, totalRam - basePlanRam);
+    const additionalRamCost = Math.round(additionalRam * 225); // $2.25 per GB = 225 cents
+    
+    const totalPrice = basePrice + additionalRamCost;
 
     console.log('💰 Pricing calculation:', {
       plan: planId,
-      basePrice,
-      additionalRamCost,
-      totalPrice
+      basePrice: basePrice + ' cents',
+      basePlanRam: basePlanRam + 'GB',
+      totalRam: totalRam + 'GB', 
+      additionalRam: additionalRam + 'GB',
+      additionalRamCost: additionalRamCost + ' cents',
+      totalPrice: totalPrice + ' cents'
     });
+
+    // Validation: Make sure totalPrice is a valid integer
+    if (!Number.isInteger(totalPrice) || totalPrice <= 0) {
+      console.error('❌ Invalid total price:', totalPrice);
+      return res.status(400).json({
+        error: 'Invalid pricing calculation',
+        code: 'INVALID_PRICE',
+        details: { totalPrice, basePrice, additionalRamCost }
+      });
+    }
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -359,9 +385,9 @@ app.post('/create-checkout-session', async (req, res) => {
           currency: 'usd',
           product_data: {
             name: `Minecraft Server - ${serverConfig.serverName}`,
-            description: `${planId} plan with ${serverConfig.totalRam}GB RAM`
+            description: `${planId.charAt(0).toUpperCase() + planId.slice(1)} plan with ${totalRam}GB RAM`
           },
-          unit_amount: totalPrice,
+          unit_amount: totalPrice, // This must be a valid integer
           recurring: { interval: 'month' }
         },
         quantity: 1,
@@ -373,7 +399,10 @@ app.post('/create-checkout-session', async (req, res) => {
       metadata: {
         ...serverConfig,
         planId,
-        totalRam: String(serverConfig.totalRam || 4),
+        totalRam: String(totalRam),
+        additionalRam: String(additionalRam),
+        basePrice: String(basePrice),
+        additionalRamCost: String(additionalRamCost),
         minecraftVersion: serverConfig.minecraftVersion || 'latest',
         serverType: serverConfig.serverType || 'paper',
         maxPlayers: String(serverConfig.maxPlayers || 20),
@@ -397,6 +426,67 @@ app.post('/create-checkout-session', async (req, res) => {
       error: error.message,
       code: 'CHECKOUT_ERROR'
     });
+  }
+});
+
+// Debug endpoint for troubleshooting
+app.post('/debug/pricing', async (req, res) => {
+  try {
+    const { serverConfig, planId } = req.body;
+    
+    console.log('🔍 Debug pricing calculation:');
+    console.log('Input serverConfig:', JSON.stringify(serverConfig, null, 2));
+    console.log('Input planId:', planId);
+    
+    const planPrices = {
+      starter: 499, // $4.99
+      pro: 999,     // $9.99
+      elite: 1999   // $19.99
+    };
+
+    const planBaseRam = {
+      starter: 2,
+      pro: 4,
+      elite: 8
+    };
+
+    const basePrice = planPrices[planId] || planPrices.pro;
+    const basePlanRam = planBaseRam[planId] || planBaseRam.pro;
+    
+    const totalRam = parseInt(serverConfig.totalRam) || basePlanRam;
+    const additionalRam = Math.max(0, totalRam - basePlanRam);
+    const additionalRamCost = Math.round(additionalRam * 225);
+    
+    const totalPrice = basePrice + additionalRamCost;
+    
+    const result = {
+      inputs: {
+        planId,
+        totalRamFromFrontend: serverConfig.totalRam,
+        serverConfigType: typeof serverConfig.totalRam
+      },
+      calculations: {
+        basePrice,
+        basePlanRam,
+        totalRam,
+        additionalRam,
+        additionalRamCost,
+        totalPrice
+      },
+      validation: {
+        isPriceInteger: Number.isInteger(totalPrice),
+        isPricePositive: totalPrice > 0,
+        priceInDollars: (totalPrice / 100).toFixed(2)
+      }
+    };
+    
+    console.log('📊 Pricing result:', JSON.stringify(result, null, 2));
+    
+    res.json(result);
+    
+  } catch (error) {
+    console.error('❌ Debug pricing error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -703,12 +793,13 @@ app.get('/health', (req, res) => {
     pterodactyl: process.env.PTERODACTYL_API_URL,
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    version: '2.1.0', // Updated version
+    version: '2.2.0', // Updated version
     endpoints: [
       'POST /create-checkout-session',
       'GET /server-details/:sessionId',
       'GET /debug/stripe/:sessionId',
       'GET /debug/sessions',
+      'POST /debug/pricing',
       'GET /health',
       'POST /webhook'
     ]
@@ -739,6 +830,7 @@ app.use((req, res) => {
       'GET /server-details/:sessionId',
       'GET /debug/stripe/:sessionId',
       'GET /debug/sessions',
+      'POST /debug/pricing',
       'GET /health',
       'POST /webhook'
     ],
@@ -756,13 +848,14 @@ app.listen(PORT, () => {
   console.log(`💳 Stripe mode: ${process.env.STRIPE_SECRET_KEY?.startsWith('sk_test') ? 'TEST' : 'LIVE'}`);
   console.log(`🎮 Pterodactyl API: ${process.env.PTERODACTYL_API_URL}`);
   console.log(`📧 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`📊 Version: 2.1.0 (Enhanced webhook handling)`);
+  console.log(`📊 Version: 2.2.0 (Fixed pricing calculation)`);
   console.log('==========================================');
   console.log('Available endpoints:');
   console.log('  POST /create-checkout-session');
   console.log('  GET  /server-details/:sessionId');
   console.log('  GET  /debug/stripe/:sessionId');
   console.log('  GET  /debug/sessions');
+  console.log('  POST /debug/pricing');
   console.log('  GET  /health');
   console.log('  POST /webhook');
   console.log('==========================================');
