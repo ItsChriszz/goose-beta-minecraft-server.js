@@ -322,69 +322,108 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
+// IMPROVED server-details endpoint with better debugging
 app.get('/server-details/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     
-    console.log(`🔍 Fetching server details for session: ${sessionId}`);
-    console.log(`📊 Request details:`, {
-      method: req.method,
-      url: req.url,
-      headers: {
-        'user-agent': req.headers['user-agent'],
-        'origin': req.headers.origin
-      }
-    });
+    console.log('='.repeat(50));
+    console.log(`🔍 SERVER DETAILS REQUEST`);
+    console.log('='.repeat(50));
+    console.log(`📋 Session ID: ${sessionId}`);
+    console.log(`🕐 Timestamp: ${new Date().toISOString()}`);
+    console.log(`🌐 Request Origin: ${req.headers.origin || 'Unknown'}`);
+    console.log(`🔑 Stripe Key Type: ${process.env.STRIPE_SECRET_KEY?.substring(0, 8)}...`);
+    console.log('='.repeat(50));
     
+    // Validate session ID format
     if (!sessionId || !sessionId.startsWith('cs_')) {
       console.log('❌ Invalid session ID format:', sessionId);
       return res.status(400).json({ 
         error: 'Invalid session ID format',
-        code: 'INVALID_SESSION_ID'
+        code: 'INVALID_SESSION_ID',
+        expected: 'Session ID should start with cs_',
+        received: sessionId
       });
     }
 
-    // Retrieve session with expanded data
+    // Step 1: Try to retrieve session from Stripe
     let session;
     try {
       console.log('🔄 Retrieving session from Stripe...');
       session = await stripe.checkout.sessions.retrieve(sessionId, {
         expand: ['customer', 'subscription']
       });
-      console.log('✅ Session retrieved successfully:', {
-        id: session.id,
-        status: session.status,
-        payment_status: session.payment_status,
-        amount_total: session.amount_total
-      });
+      
+      console.log('✅ Session retrieved successfully:');
+      console.log(`   - ID: ${session.id}`);
+      console.log(`   - Status: ${session.status}`);
+      console.log(`   - Payment Status: ${session.payment_status}`);
+      console.log(`   - Amount: $${(session.amount_total / 100).toFixed(2)}`);
+      console.log(`   - Customer Email: ${session.customer_details?.email || 'N/A'}`);
+      console.log(`   - Created: ${new Date(session.created * 1000).toISOString()}`);
+      console.log(`   - Metadata Keys: [${Object.keys(session.metadata || {}).join(', ')}]`);
+      
     } catch (stripeError) {
-      console.error('❌ Stripe session retrieval failed:', {
-        error: stripeError.message,
-        type: stripeError.type,
-        code: stripeError.code
-      });
+      console.error('❌ Stripe session retrieval failed:');
+      console.error(`   - Error Type: ${stripeError.type}`);
+      console.error(`   - Error Code: ${stripeError.code}`);
+      console.error(`   - Error Message: ${stripeError.message}`);
+      console.error(`   - Request ID: ${stripeError.requestId || 'N/A'}`);
       
       if (stripeError.type === 'StripeInvalidRequestError') {
+        // Check if it's a test/live key mismatch
+        const isTestSession = sessionId.includes('test_');
+        const isTestKey = process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_');
+        
+        if (isTestSession && !isTestKey) {
+          return res.status(404).json({ 
+            error: 'Test session with live Stripe key',
+            code: 'STRIPE_KEY_MISMATCH',
+            details: 'You are trying to access a test session with a live Stripe key. Please use a test key.',
+            sessionType: 'test',
+            keyType: 'live'
+          });
+        } else if (!isTestSession && isTestKey) {
+          return res.status(404).json({ 
+            error: 'Live session with test Stripe key',
+            code: 'STRIPE_KEY_MISMATCH',
+            details: 'You are trying to access a live session with a test Stripe key. Please use a live key.',
+            sessionType: 'live',
+            keyType: 'test'
+          });
+        }
+        
         return res.status(404).json({ 
           error: 'Session not found in Stripe',
           code: 'STRIPE_SESSION_NOT_FOUND',
-          details: stripeError.message
+          details: stripeError.message,
+          sessionId: sessionId,
+          timestamp: new Date().toISOString()
         });
       }
-      throw stripeError;
-    }
-
-    // Handle payment status
-    if (session.payment_status !== 'paid') {
-      console.log('💳 Payment not completed yet:', session.payment_status);
-      return res.status(202).json({ 
-        status: 'payment_pending',
-        paymentStatus: session.payment_status,
-        sessionId: session.id
+      
+      return res.status(500).json({
+        error: 'Stripe API error',
+        code: 'STRIPE_API_ERROR',
+        details: stripeError.message
       });
     }
 
-    // Check if server already created
+    // Step 2: Check payment status
+    console.log('💳 Checking payment status...');
+    if (session.payment_status !== 'paid') {
+      console.log(`💸 Payment not completed: ${session.payment_status}`);
+      return res.status(202).json({ 
+        status: 'payment_pending',
+        paymentStatus: session.payment_status,
+        sessionId: session.id,
+        message: 'Payment is still being processed'
+      });
+    }
+
+    // Step 3: Check if server already created
+    console.log('🏗️ Checking server creation status...');
     if (session.metadata.serverCreated === 'true') {
       console.log('✅ Server already created, returning existing details');
       return res.json({
@@ -407,13 +446,16 @@ app.get('/server-details/:sessionId', async (req, res) => {
       });
     }
 
-    // Create server since payment is complete
+    // Step 4: Create server since payment is complete
     console.log('🚀 Payment completed, creating server...');
+    console.log('📝 Session metadata for server creation:');
+    console.log(JSON.stringify(session.metadata, null, 2));
     
     try {
       const serverDetails = await createMinecraftServer(session);
       
-      // Update session metadata with server details
+      // Step 5: Update session metadata with server details
+      console.log('📝 Updating session metadata with server details...');
       await stripe.checkout.sessions.update(sessionId, {
         metadata: {
           ...session.metadata,
@@ -426,6 +468,7 @@ app.get('/server-details/:sessionId', async (req, res) => {
       });
 
       console.log('✅ Server created and session updated successfully');
+      console.log('🎉 Server deployment complete!');
 
       res.json({
         status: 'ready',
@@ -433,21 +476,140 @@ app.get('/server-details/:sessionId', async (req, res) => {
       });
 
     } catch (serverError) {
-      console.error('❌ Server creation failed:', serverError);
+      console.error('❌ Server creation failed:');
+      console.error(`   - Error: ${serverError.message}`);
+      console.error(`   - Stack: ${serverError.stack}`);
+      
+      // Try to update session with error info
+      try {
+        await stripe.checkout.sessions.update(sessionId, {
+          metadata: {
+            ...session.metadata,
+            serverCreated: 'false',
+            serverError: serverError.message,
+            errorTimestamp: new Date().toISOString()
+          }
+        });
+      } catch (updateError) {
+        console.error('❌ Failed to update session with error:', updateError.message);
+      }
       
       return res.status(500).json({
         error: 'Server deployment failed',
         details: serverError.message,
-        code: 'SERVER_CREATION_FAILED'
+        code: 'SERVER_CREATION_FAILED',
+        sessionId: sessionId,
+        timestamp: new Date().toISOString()
       });
     }
 
   } catch (error) {
-    console.error('❌ Server details error:', error);
+    console.error('❌ Unexpected server details error:', error);
     
     res.status(500).json({ 
+      error: 'Internal server error',
+      details: error.message,
+      code: 'SERVER_DETAILS_ERROR',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Enhanced debug endpoint
+app.get('/debug/stripe/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    console.log('🔍 Debug request for session:', sessionId);
+    
+    // Test Stripe connection first
+    try {
+      const balance = await stripe.balance.retrieve();
+      console.log('✅ Stripe connection successful');
+    } catch (connectionError) {
+      console.error('❌ Stripe connection failed:', connectionError.message);
+      return res.status(500).json({
+        error: 'Stripe connection failed',
+        details: connectionError.message,
+        suggestion: 'Check your STRIPE_SECRET_KEY environment variable'
+      });
+    }
+    
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['customer', 'subscription']
+    });
+    
+    console.log('✅ Session found:', {
+      id: session.id,
+      status: session.status,
+      payment_status: session.payment_status,
+      customer_email: session.customer_details?.email,
+      metadata_keys: Object.keys(session.metadata || {})
+    });
+    
+    res.json({
+      session: {
+        id: session.id,
+        status: session.status,
+        payment_status: session.payment_status,
+        metadata: session.metadata,
+        customer_details: session.customer_details,
+        amount_total: session.amount_total,
+        currency: session.currency,
+        created: new Date(session.created * 1000).toISOString(),
+        stripe_account: session.livemode ? 'live' : 'test'
+      },
+      environment: {
+        stripe_key_type: process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_') ? 'test' : 'live',
+        api_base_url: API_BASE_URL,
+        frontend_url: process.env.FRONTEND_URL
+      }
+    });
+  } catch (error) {
+    console.error('❌ Debug session error:', error.message);
+    res.status(500).json({ 
       error: error.message,
-      code: 'SERVER_DETAILS_ERROR'
+      type: error.type,
+      code: error.code,
+      suggestion: error.type === 'StripeInvalidRequestError' ? 
+        'Session may not exist or there might be a test/live key mismatch' : 
+        'Check server logs for more details'
+    });
+  }
+});
+
+// New endpoint to list recent sessions for debugging
+app.get('/debug/sessions', async (req, res) => {
+  try {
+    console.log('📋 Listing recent Stripe sessions...');
+    
+    const sessions = await stripe.checkout.sessions.list({
+      limit: 10,
+      expand: ['data.customer']
+    });
+    
+    const sessionSummary = sessions.data.map(session => ({
+      id: session.id,
+      status: session.status,
+      payment_status: session.payment_status,
+      customer_email: session.customer_details?.email,
+      amount: session.amount_total,
+      created: new Date(session.created * 1000).toISOString(),
+      metadata_keys: Object.keys(session.metadata || {})
+    }));
+    
+    res.json({
+      total_sessions: sessions.data.length,
+      sessions: sessionSummary,
+      environment: {
+        stripe_key_type: process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_') ? 'test' : 'live'
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to list sessions:', error.message);
+    res.status(500).json({
+      error: error.message,
+      type: error.type
     });
   }
 });
@@ -497,48 +659,11 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     api: API_BASE_URL,
     stripe: process.env.STRIPE_SECRET_KEY ? 'configured' : 'missing',
+    stripe_mode: process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_') ? 'test' : 'live',
     pterodactyl: process.env.PTERODACTYL_API_URL,
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
-});
-
-// Debug endpoint to test Stripe connection
-app.get('/debug/stripe/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    console.log('🔍 Debug request for session:', sessionId);
-    
-    const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ['customer', 'subscription']
-    });
-    
-    console.log('✅ Session found:', {
-      id: session.id,
-      status: session.status,
-      payment_status: session.payment_status,
-      customer_email: session.customer_details?.email,
-      metadata_keys: Object.keys(session.metadata || {})
-    });
-    
-    res.json({
-      session: {
-        id: session.id,
-        status: session.status,
-        payment_status: session.payment_status,
-        metadata: session.metadata,
-        customer_details: session.customer_details,
-        amount_total: session.amount_total,
-        currency: session.currency
-      }
-    });
-  } catch (error) {
-    console.error('❌ Debug session error:', error.message);
-    res.status(500).json({ 
-      error: error.message,
-      type: error.type 
-    });
-  }
 });
 
 // Error handling middleware
@@ -547,7 +672,8 @@ app.use((err, req, res, next) => {
   res.status(500).json({
     error: 'Internal server error',
     code: 'INTERNAL_SERVER_ERROR',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong',
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -558,7 +684,15 @@ app.use((req, res) => {
     error: 'Route not found',
     code: 'NOT_FOUND',
     path: req.path,
-    method: req.method
+    method: req.method,
+    available_endpoints: [
+      'POST /create-checkout-session',
+      'GET /server-details/:sessionId',
+      'GET /debug/stripe/:sessionId',
+      'GET /debug/sessions',
+      'GET /health',
+      'POST /webhook'
+    ]
   });
 });
 
@@ -571,5 +705,13 @@ app.listen(PORT, () => {
   console.log(`💳 Stripe mode: ${process.env.STRIPE_SECRET_KEY?.startsWith('sk_test') ? 'TEST' : 'LIVE'}`);
   console.log(`🎮 Pterodactyl API: ${process.env.PTERODACTYL_API_URL}`);
   console.log(`📧 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log('==========================================');
+  console.log('Available endpoints:');
+  console.log('  POST /create-checkout-session');
+  console.log('  GET  /server-details/:sessionId');
+  console.log('  GET  /debug/stripe/:sessionId');
+  console.log('  GET  /debug/sessions');
+  console.log('  GET  /health');
+  console.log('  POST /webhook');
   console.log('==========================================');
 });
