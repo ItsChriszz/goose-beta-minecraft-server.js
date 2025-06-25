@@ -71,7 +71,7 @@ class PaymentHandler {
     }
 
     // Check required string fields
-    const requiredStringFields = ['serverName', 'planId', 'selectedServerType', 'minecraftVersion'];
+    const requiredStringFields = ['serverName', 'selectedServerType', 'minecraftVersion'];
     requiredStringFields.forEach(field => {
       if (!serverConfig[field] || typeof serverConfig[field] !== 'string' || !serverConfig[field].trim()) {
         errors.push(`${field} is required and must be a non-empty string`);
