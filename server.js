@@ -513,28 +513,28 @@ app.post('/create-checkout-session', async (req, res) => {
 
     console.log('📋 Safe metadata created:', metadata);
 
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      customer_creation: 'always', // Always create a customer
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: {
-            name: `Minecraft Server - ${serverConfig.serverName}`,
-            description: `${serverConfig.serverType.toUpperCase()} server running Minecraft ${serverConfig.minecraftVersion}`
-          },
-          unit_amount: Math.round(serverConfig.totalCost * 100), // Convert to cents
-          recurring: { interval: 'month' }
-        },
-        quantity: 1,
-      }],
-      mode: 'subscription',
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/setup/${encodeURIComponent(serverConfig.serverName)}`,
-      
-      // Use the safe metadata object
-      metadata: metadata
-    });
+const session = await stripe.checkout.sessions.create({
+  payment_method_types: ['card'],
+  customer_creation: 'always', // Always create a customer
+  ui_mode: 'hosted', // ✅ REQUIRED to get session.url in subscription mode
+  line_items: [{
+    price_data: {
+      currency: 'usd',
+      product_data: {
+        name: `Minecraft Server - ${serverConfig.serverName}`,
+        description: `${serverConfig.serverType.toUpperCase()} server running Minecraft ${serverConfig.minecraftVersion}`
+      },
+      unit_amount: Math.round(serverConfig.totalCost * 100), // Convert to cents
+      recurring: { interval: 'month' }
+    },
+    quantity: 1,
+  }],
+  mode: 'subscription',
+  success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
+  cancel_url: `${process.env.FRONTEND_URL}/setup/${encodeURIComponent(serverConfig.serverName)}`,
+  metadata: metadata
+});
+
 
     console.log('✅ Checkout session created:', session.id);
     console.log('🔗 Checkout URL:', session.url);
