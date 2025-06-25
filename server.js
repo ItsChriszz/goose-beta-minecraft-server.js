@@ -230,9 +230,14 @@ app.post('/create-checkout-session', async (req, res) => {
     }
 
     // Calculate total price based on RAM
-    const additionalRam = Math.max(0, totalRam - plan.ram)
-    const additionalRamCost = additionalRam * 2.25 // $2.25 per GB
-    let totalPrice = plan.basePrice + additionalRamCost
+const additionalRam = Math.max(0, totalRam - plan.ram);
+const additionalRamCost = additionalRam * 2.25; // $2.25 per GB
+let totalPrice = plan.basePrice + additionalRamCost;
+
+console.log("- Base Price:", plan.basePrice, typeof plan.basePrice);
+console.log("🧠 additionalRam:", additionalRam, typeof additionalRam);
+console.log("➕ additionalRamCost:", additionalRamCost, typeof additionalRamCost);
+console.log("🧾 totalPrice (base + additional):", totalPrice, typeof totalPrice);
 
     // 🛡️ CRITICAL FIX: Ensure totalPrice is always a valid number
     if (!Number.isFinite(totalPrice) || isNaN(totalPrice) || totalPrice < 0) {
