@@ -1,3 +1,4 @@
+
 // server.js - Complete Updated Version with Server Details Endpoint
 
 require('dotenv').config();
@@ -484,20 +485,16 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Stripe Checkout Session Creation - UPDATED
+// Stripe Checkout Session Creation - UPDATED to not require email upfront
 app.post('/create-checkout-session', async (req, res) => {
   try {
-    const { planId, serverConfig, customerEmail } = req.body;
+    const { planId, serverConfig } = req.body;
 
-    console.log('🛒 Creating checkout session:', { planId, serverConfig, customerEmail });
+    console.log('🛒 Creating checkout session:', { planId, serverConfig });
 
     // Validate required fields
     if (!serverConfig.serverName || !serverConfig.serverType || !serverConfig.minecraftVersion) {
       return res.status(400).json({ error: 'Missing required server configuration' });
-    }
-
-    if (!customerEmail || !customerEmail.includes('@')) {
-      return res.status(400).json({ error: 'Valid email address is required' });
     }
 
     // Safe metadata creation with defaults for missing values
@@ -512,15 +509,14 @@ app.post('/create-checkout-session', async (req, res) => {
       enableWhitelist: String(serverConfig.enableWhitelist || false),
       enablePvp: String(serverConfig.enablePvp !== undefined ? serverConfig.enablePvp : true),
       selectedPlugins: Array.isArray(serverConfig.selectedPlugins) ? serverConfig.selectedPlugins.join(',') : '',
-      totalCost: String(serverConfig.totalCost || 0),
-      customerEmail: String(customerEmail)
+      totalCost: String(serverConfig.totalCost || 0)
     };
 
     console.log('📋 Safe metadata created:', metadata);
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
-      customer_email: customerEmail,
+      customer_creation: 'always', // Always create a customer
       line_items: [{
         price_data: {
           currency: 'usd',
