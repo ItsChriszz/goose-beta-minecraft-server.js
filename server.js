@@ -1,4 +1,4 @@
-// server.js - Complete Final Version with All Updates
+// server.js - Complete Fixed Version with Direct Stripe URLs
 
 require('dotenv').config();
 const express = require('express');
@@ -339,32 +339,6 @@ async function createPterodactylServer(session) {
   }
 }
 
-// Redirect to Stripe checkout endpoint
-app.get('/checkout/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    
-    console.log('🔗 Redirecting to Stripe checkout for session:', sessionId);
-    
-    // Get session from Stripe to get the checkout URL
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    
-    if (!session || !session.url) {
-      console.error('❌ Checkout session not found or expired:', sessionId);
-      return res.status(404).json({ error: 'Checkout session not found or expired' });
-    }
-    
-    console.log('✅ Redirecting to Stripe URL:', session.url);
-    
-    // Redirect to Stripe's hosted checkout page
-    res.redirect(session.url);
-    
-  } catch (err) {
-    console.error('❌ Error redirecting to checkout:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // Get server details endpoint
 app.get('/server-details/:sessionId', async (req, res) => {
   try {
@@ -510,7 +484,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Stripe Checkout Session Creation
+// Stripe Checkout Session Creation - FIXED VERSION
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { planId, serverConfig } = req.body;
@@ -563,9 +537,14 @@ app.post('/create-checkout-session', async (req, res) => {
     });
 
     console.log('✅ Checkout session created:', session.id);
+    console.log('🔗 Checkout URL:', session.url);
     console.log('📋 Metadata sent to Stripe:', metadata);
 
-    res.json({ sessionId: session.id });
+    // Return both sessionId and the direct Stripe checkout URL
+    res.json({ 
+      sessionId: session.id,
+      checkoutUrl: session.url 
+    });
   } catch (err) {
     console.error('❌ Checkout session error:', err.message);
     res.status(500).json({ error: err.message });
