@@ -1,180 +1,23 @@
-// server.js - Complete Fixed Version with Proper Environment Variable Handling
 
-require('dotenv').config();
-const express = require('express');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const axios = require('axios');
+// server.js - Updated sections for server credentials
 
-const PORT = process.env.PORT || 3001;
-
-// Validate required environment variables on startup FIRST
-if (!process.env.STRIPE_SECRET_KEY) {
-  console.error('❌ STRIPE_SECRET_KEY environment variable is required');
-  process.exit(1);
+// Add this function to generate server credentials
+function generateServerCredentials(customerEmail, serverName) {
+  // Generate a secure password for the server
+  const serverPassword = generateRandomPassword(16);
+  
+  // Create username from email (clean format)
+  const username = customerEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const finalUsername = username + '_' + Date.now().toString().slice(-4);
+  
+  return {
+    username: finalUsername,
+    password: serverPassword,
+    serverName: serverName
+  };
 }
 
-if (!process.env.STRIPE_WEBHOOK_SECRET) {
-  console.error('❌ STRIPE_WEBHOOK_SECRET environment variable is required');
-  process.exit(1);
-}
-
-if (!process.env.PTERODACTYL_API_KEY) {
-  console.error('❌ PTERODACTYL_API_KEY environment variable is required');
-  process.exit(1);
-}
-
-if (!process.env.PTERODACTYL_API_URL) {
-  console.error('❌ PTERODACTYL_API_URL environment variable is required');
-  process.exit(1);
-}
-
-// THEN declare constants after validation
-const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
-const PTERODACTYL_BASE = process.env.PTERODACTYL_API_URL;
-
-const app = express();
-
-// CORS Configuration
-const corsOptions = {
-  origin: process.env.FRONTEND_URL,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-};
-
-app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
-app.use(bodyParser.json());
-app.use(cors(corsOptions));
-
-// Create or find user account for the customer
-async function createOrFindUser(customerEmail, serverName) {
-  try {
-    // First, try to find existing user
-    const usersRes = await axios.get(`${PTERODACTYL_BASE}/users`, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        Accept: 'application/json'
-      }
-    });
-
-    const existingUser = usersRes.data.data.find(u => u.attributes.email === customerEmail);
-    
-    if (existingUser) {
-      console.log('✅ Found existing user:', existingUser.attributes.email);
-      return existingUser.attributes.id;
-    }
-
-    // Create new user if not found
-    console.log('👤 Creating new user for:', customerEmail);
-    
-    // Generate username from email (remove @ and domain)
-    const username = customerEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    
-    // Split name from email or use defaults
-    const nameParts = customerEmail.split('@')[0].split('.');
-    const firstName = nameParts[0] || 'User';
-    const lastName = nameParts[1] || 'GooseHosting';
-
-    const userData = {
-      email: customerEmail,
-      username: username + '_' + Date.now().toString().slice(-4), // Add random suffix to avoid conflicts
-      first_name: firstName.charAt(0).toUpperCase() + firstName.slice(1),
-      last_name: lastName.charAt(0).toUpperCase() + lastName.slice(1),
-      password: generateRandomPassword(), // We'll create this function
-      root_admin: false
-    };
-
-    const response = await axios.post(`${PTERODACTYL_BASE}/users`, userData, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        'Content-Type': 'application/json',
-        Accept: 'Application/vnd.pterodactyl.v1+json'
-      }
-    });
-
-    const userId = response.data.attributes.id;
-    console.log('✅ Created new user:', {
-      id: userId,
-      email: customerEmail,
-      username: userData.username
-    });
-
-    return userId;
-
-  } catch (err) {
-    console.error('❌ Failed to create/find user:', err.response?.data || err.message);
-    // Fallback to admin user if user creation fails
-    return 1; // Default admin user ID
-  }
-}
-
-// Generate secure random password
-function generateRandomPassword(length = 12) {
-  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-  let password = '';
-  for (let i = 0; i < length; i++) {
-    password += charset.charAt(Math.floor(Math.random() * charset.length));
-  }
-  return password;
-}
-// Fetch user/egg/allocation IDs
-async function fetchPterodactylMeta(customerEmail = 'admin@goosehosting.com') {
-  try {
-    // Create or find user account
-    const userId = await createOrFindUser(customerEmail);
-
-    const eggsRes = await axios.get(`${PTERODACTYL_BASE}/nests/1/eggs`, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        Accept: 'application/json'
-      }
-    });
-
-    const eggData = eggsRes.data.data;
-    if (!Array.isArray(eggData)) throw new Error('Unexpected response format for eggs');
-
-    console.log('Available eggs:', eggData.map(e => e.attributes.name));
-
-    const minecraftEgg = eggData.find(e => e.attributes.name.toLowerCase().includes('minecraft'));
-    if (!minecraftEgg) throw new Error('Minecraft Java egg not found.');
-
-    const nodesRes = await axios.get(`${PTERODACTYL_BASE}/nodes`, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        Accept: 'application/json'
-      }
-    });
-
-    const nodeId = nodesRes.data.data[0].attributes.id;
-
-    const allocRes = await axios.get(`${PTERODACTYL_BASE}/nodes/${nodeId}/allocations`, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        Accept: 'application/json'
-      }
-    });
-
-    const allocation = allocRes.data.data.find(a => !a.attributes.assigned);
-    if (!allocation) throw new Error('No free allocation found.');
-
-    return {
-      userId: userId,
-      eggName: minecraftEgg.attributes.name,
-      eggId: minecraftEgg.attributes.id,
-      dockerImage: minecraftEgg.attributes.docker_image,
-      startup: minecraftEgg.attributes.startup,
-      nodeId: nodeId,
-      allocationId: allocation.attributes.id
-    };
-  } catch (err) {
-    console.error('❌ Failed to fetch Pterodactyl meta:', err.message);
-    throw err;
-  }
-}
-
-// Create server on Pterodactyl using individual metadata fields
+// Update the createPterodactylServer function
 async function createPterodactylServer(session) {
   try {
     console.log('🦆 GOOSE HOSTING - PTERODACTYL DEPLOYMENT');
@@ -210,6 +53,12 @@ async function createPterodactylServer(session) {
     console.log('  • Whitelist:', enableWhitelist);
     console.log('  • PvP:', enablePvp);
     console.log('  • Plugins:', selectedPlugins.length > 0 ? selectedPlugins.join(', ') : 'None');
+
+    // Generate server credentials
+    const credentials = generateServerCredentials(customerEmail, serverName);
+    console.log('🔐 Generated Credentials:');
+    console.log('  • Username:', credentials.username);
+    console.log('  • Password:', credentials.password);
 
     // Get the allocation info BEFORE creating the server
     const allocRes = await axios.get(`${PTERODACTYL_BASE}/nodes/${config.nodeId}/allocations`, {
@@ -327,18 +176,31 @@ async function createPterodactylServer(session) {
     console.log('  • Docker Image:', config.dockerImage);
     console.log('==========================================');
 
-    // Update the Stripe session with server details for success page
+    // Update the Stripe session with ALL server details including credentials
     await stripe.checkout.sessions.update(session.id, {
       metadata: {
         ...session.metadata,
         serverId: String(serverId),
         serverUuid: String(serverUuid),
         serverAddress: serverAddress,
-        serverStatus: 'created'
+        serverStatus: 'created',
+        // Add server credentials and connection info
+        serverUsername: credentials.username,
+        serverPassword: credentials.password,
+        panelUrl: `https://panel.goosehosting.com/server/${serverUuid}`,
+        ftpHost: 'ftp.goosehosting.com',
+        ftpPort: '21',
+        ftpUsername: credentials.username,
+        ftpPassword: credentials.password,
+        // Additional server info
+        serverPort: String(serverPort),
+        serverHost: 'mc.goosehosting.com',
+        pterodactylUserId: String(config.userId),
+        createdAt: new Date().toISOString()
       }
     });
 
-    console.log('📝 Updated Stripe session with server details');
+    console.log('📝 Updated Stripe session with complete server details including credentials');
 
     // If plugins are selected and it's a supported server type, we could install them here
     if (selectedPlugins.length > 0 && (serverType === 'paper' || serverType === 'spigot')) {
@@ -353,7 +215,8 @@ async function createPterodactylServer(session) {
       serverUuid,
       serverName,
       serverAddress,
-      message: 'Server created successfully'
+      credentials,
+      message: 'Server created successfully with credentials'
     };
 
   } catch (err) {
@@ -367,168 +230,3 @@ async function createPterodactylServer(session) {
     throw err;
   }
 }
-
-// Stripe Webhook Handler
-app.post('/webhook', async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-    console.log(`🔔 Received event: ${event.type}`);
-  } catch (err) {
-    console.error('❌ Webhook verification failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  try {
-    switch (event.type) {
-      case 'checkout.session.completed':
-        console.log('💳 Payment completed, creating server...');
-        await createPterodactylServer(event.data.object);
-        break;
-        
-      case 'invoice.payment_succeeded':
-        console.log('💸 Payment succeeded');
-        break;
-        
-      case 'invoice.payment_failed':
-        console.log('❌ Payment failed');
-        break;
-        
-      case 'customer.subscription.created':
-        console.log('🔄 Subscription created');
-        break;
-        
-      case 'customer.subscription.deleted':
-        console.log('❌ Subscription cancelled');
-        // Here you could suspend the server
-        break;
-        
-      default:
-        console.log(`❓ Unhandled event type: ${event.type}`);
-    }
-    
-    res.json({ received: true });
-  } catch (err) {
-    console.error('❌ Event processing error:', {
-      error: err.message,
-      event: event.type,
-      stack: err.stack,
-      timestamp: new Date().toISOString()
-    });
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Stripe Checkout Session Creation
-app.post('/create-checkout-session', async (req, res) => {
-  try {
-    const { planId, serverConfig } = req.body;
-
-    console.log('🛒 Creating checkout session:', { planId, serverConfig });
-
-    // Validate required fields
-    if (!serverConfig.serverName || !serverConfig.serverType || !serverConfig.minecraftVersion) {
-      return res.status(400).json({ error: 'Missing required server configuration' });
-    }
-
-    // Safe metadata creation with defaults for missing values
-    const metadata = {
-      serverName: String(serverConfig.serverName || ''),
-      planId: String(planId || 'pro'),
-      serverType: String(serverConfig.serverType || 'paper'),
-      minecraftVersion: String(serverConfig.minecraftVersion || 'latest'),
-      maxPlayers: String(serverConfig.maxPlayers || 20),
-      totalRam: String(serverConfig.totalRam || 4),
-      viewDistance: String(serverConfig.viewDistance || 10),
-      enableWhitelist: String(serverConfig.enableWhitelist || false),
-      enablePvp: String(serverConfig.enablePvp !== undefined ? serverConfig.enablePvp : true),
-      selectedPlugins: Array.isArray(serverConfig.selectedPlugins) ? serverConfig.selectedPlugins.join(',') : '',
-      totalCost: String(serverConfig.totalCost || 0)
-    };
-
-    console.log('📋 Safe metadata created:', metadata);
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: {
-            name: `Minecraft Server - ${serverConfig.serverName}`,
-            description: `${serverConfig.serverType.toUpperCase()} server running Minecraft ${serverConfig.minecraftVersion}`
-          },
-          unit_amount: Math.round(serverConfig.totalCost * 100), // Convert to cents
-          recurring: { interval: 'month' }
-        },
-        quantity: 1,
-      }],
-      mode: 'subscription',
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/setup/${encodeURIComponent(serverConfig.serverName)}`,
-      
-      // Use the safe metadata object
-      metadata: metadata
-    });
-
-    console.log('✅ Checkout session created:', session.id);
-    console.log('📋 Metadata sent to Stripe:', metadata);
-
-    res.json({ sessionId: session.id });
-  } catch (err) {
-    console.error('❌ Checkout session error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Get session details endpoint
-app.get('/session-details/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    
-    console.log('🔍 Retrieving session details for:', sessionId);
-    
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    
-    res.json({
-      sessionId: session.id,
-      paymentStatus: session.payment_status,
-      customerEmail: session.customer_details?.email,
-      amountTotal: session.amount_total,
-      currency: session.currency,
-      metadata: session.metadata,
-      createdAt: new Date(session.created * 1000).toISOString()
-    });
-  } catch (err) {
-    console.error('❌ Error retrieving session:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
-  });
-});
-
-// Start Server
-app.listen(PORT, () => {
-  console.log(`🦆 GOOSE HOSTING SERVER`);
-  console.log(`====================`);
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔑 Stripe configured: ${process.env.STRIPE_SECRET_KEY ? '✅' : '❌'}`);
-  console.log(`🪝 Webhook secret configured: ${process.env.STRIPE_WEBHOOK_SECRET ? '✅' : '❌'}`);
-  console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL || 'Not set'}`);
-  console.log(`🦆 Pterodactyl API: ${PTERODACTYL_BASE}`);
-  console.log(`🔑 Pterodactyl API Key: ${PTERODACTYL_API_KEY ? '✅ Configured' : '❌ Missing'}`);
-  console.log(`====================`);
-});
