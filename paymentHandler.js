@@ -219,7 +219,7 @@ class PaymentHandler {
   createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice) {
     return {
       // Plan and billing info
-      planId: serverConfig.planId,
+      planId: planId,
       billingCycle: billingCycle,
       finalPrice: finalPrice.toString(),
       monthlyRate: serverConfig.totalCost.toString(),
