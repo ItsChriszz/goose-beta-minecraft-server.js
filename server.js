@@ -1,4 +1,4 @@
-// server.js - Complete Fixed Version with Proper Environment Variable Handling
+// server.js - Complete Updated Version with Server Details Endpoint
 
 require('dotenv').config();
 const express = require('express');
@@ -35,6 +35,9 @@ const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
 const PTERODACTYL_BASE = process.env.PTERODACTYL_API_URL;
 
 const app = express();
+
+// Store server deployment status in memory (for production, use a database)
+const serverDeployments = new Map();
 
 // CORS Configuration
 const corsOptions = {
@@ -106,12 +109,24 @@ async function fetchPterodactylMeta(email = 'admin@goosehosting.com') {
       eggId: minecraftEgg.attributes.id,
       dockerImage: minecraftEgg.attributes.docker_image,
       startup: minecraftEgg.attributes.startup,
-      allocationId: allocation.attributes.id
+      allocationId: allocation.attributes.id,
+      allocationIp: allocation.attributes.ip,
+      allocationPort: allocation.attributes.port
     };
   } catch (err) {
     console.error('❌ Failed to fetch Pterodactyl meta:', err.message);
     throw err;
   }
+}
+
+// Generate random password for new users
+function generatePassword(length = 12) {
+  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  let password = '';
+  for (let i = 0; i < length; i++) {
+    password += charset.charAt(Math.floor(Math.random() * charset.length));
+  }
+  return password;
 }
 
 // Create server on Pterodactyl using individual metadata fields
@@ -120,6 +135,14 @@ async function createPterodactylServer(session) {
     console.log('🦆 GOOSE HOSTING - PTERODACTYL DEPLOYMENT');
     console.log('==========================================');
     console.log('📋 Session Metadata:', session.metadata);
+
+    // Mark deployment as starting
+    const deploymentKey = `deployment_${session.id}`;
+    serverDeployments.set(deploymentKey, {
+      status: 'deploying',
+      startedAt: new Date().toISOString(),
+      sessionId: session.id
+    });
 
     const config = await fetchPterodactylMeta();
     
@@ -246,6 +269,37 @@ async function createPterodactylServer(session) {
     console.log('  • Docker Image:', config.dockerImage);
     console.log('==========================================');
 
+    // Generate credentials for panel access
+    const customerEmail = session.customer_details?.email || 'user@goosehosting.com';
+    const generatedPassword = generatePassword();
+
+    // Update deployment status with success
+    serverDeployments.set(deploymentKey, {
+      status: 'completed',
+      startedAt: serverDeployments.get(deploymentKey).startedAt,
+      completedAt: new Date().toISOString(),
+      sessionId: session.id,
+      serverId,
+      serverUuid,
+      serverName,
+      serverIp: config.allocationIp,
+      serverPort: config.allocationPort,
+      panelUrl: process.env.PTERODACTYL_PANEL_URL || 'https://panel.goosehosting.com',
+      username: customerEmail,
+      password: generatedPassword,
+      isNewUser: true,
+      customerEmail,
+      planId,
+      maxPlayers,
+      totalRam,
+      viewDistance,
+      enableWhitelist,
+      enablePvp,
+      selectedPlugins,
+      serverType,
+      minecraftVersion
+    });
+
     // If plugins are selected and it's a supported server type, we could install them here
     if (selectedPlugins.length > 0 && (serverType === 'paper' || serverType === 'spigot')) {
       console.log('📦 Plugins to install:', selectedPlugins);
@@ -258,6 +312,8 @@ async function createPterodactylServer(session) {
       serverId,
       serverUuid,
       serverName,
+      serverIp: config.allocationIp,
+      serverPort: config.allocationPort,
       message: 'Server created successfully'
     };
 
@@ -269,9 +325,107 @@ async function createPterodactylServer(session) {
       headers: err.response?.headers
     });
     
+    // Mark deployment as failed
+    const deploymentKey = `deployment_${session.id}`;
+    serverDeployments.set(deploymentKey, {
+      status: 'failed',
+      startedAt: serverDeployments.get(deploymentKey)?.startedAt || new Date().toISOString(),
+      failedAt: new Date().toISOString(),
+      sessionId: session.id,
+      error: err.message
+    });
+    
     throw err;
   }
 }
+
+// Get server details endpoint - NEW ENDPOINT
+app.get('/server-details/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    console.log('🔍 Retrieving server details for session:', sessionId);
+    
+    // Get session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Check if payment is complete
+    if (session.payment_status !== 'paid') {
+      return res.status(202).json({ 
+        status: 'payment_pending', 
+        message: 'Payment is still processing' 
+      });
+    }
+
+    // Check deployment status
+    const deploymentKey = `deployment_${sessionId}`;
+    const deployment = serverDeployments.get(deploymentKey);
+    
+    if (!deployment) {
+      return res.status(202).json({ 
+        status: 'processing', 
+        message: 'Server is being deployed' 
+      });
+    }
+
+    if (deployment.status === 'failed') {
+      return res.status(500).json({ 
+        error: 'Server deployment failed',
+        details: deployment.error 
+      });
+    }
+
+    if (deployment.status === 'deploying') {
+      return res.status(202).json({ 
+        status: 'processing', 
+        message: 'Server is being deployed' 
+      });
+    }
+
+    // Server is ready - return full details
+    const serverDetails = {
+      sessionId,
+      serverName: deployment.serverName,
+      serverType: deployment.serverType,
+      minecraftVersion: deployment.minecraftVersion,
+      maxPlayers: deployment.maxPlayers,
+      totalRam: deployment.totalRam,
+      viewDistance: deployment.viewDistance,
+      enableWhitelist: deployment.enableWhitelist,
+      enablePvp: deployment.enablePvp,
+      selectedPlugins: deployment.selectedPlugins || [],
+      
+      // Server connection details
+      serverIp: deployment.serverIp,
+      serverPort: deployment.serverPort,
+      
+      // Panel access details
+      panelUrl: deployment.panelUrl,
+      username: deployment.username,
+      password: deployment.password,
+      isNewUser: deployment.isNewUser,
+      customerEmail: deployment.customerEmail,
+      
+      // Timestamps
+      createdAt: deployment.startedAt,
+      completedAt: deployment.completedAt,
+      
+      // Status
+      status: 'ready'
+    };
+
+    console.log('✅ Server details retrieved successfully for session:', sessionId);
+    res.json(serverDetails);
+
+  } catch (err) {
+    console.error('❌ Error retrieving server details:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Stripe Webhook Handler
 app.post('/webhook', async (req, res) => {
@@ -330,16 +484,20 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Stripe Checkout Session Creation
+// Stripe Checkout Session Creation - UPDATED
 app.post('/create-checkout-session', async (req, res) => {
   try {
-    const { planId, serverConfig } = req.body;
+    const { planId, serverConfig, customerEmail } = req.body;
 
-    console.log('🛒 Creating checkout session:', { planId, serverConfig });
+    console.log('🛒 Creating checkout session:', { planId, serverConfig, customerEmail });
 
     // Validate required fields
     if (!serverConfig.serverName || !serverConfig.serverType || !serverConfig.minecraftVersion) {
       return res.status(400).json({ error: 'Missing required server configuration' });
+    }
+
+    if (!customerEmail || !customerEmail.includes('@')) {
+      return res.status(400).json({ error: 'Valid email address is required' });
     }
 
     // Safe metadata creation with defaults for missing values
@@ -354,13 +512,15 @@ app.post('/create-checkout-session', async (req, res) => {
       enableWhitelist: String(serverConfig.enableWhitelist || false),
       enablePvp: String(serverConfig.enablePvp !== undefined ? serverConfig.enablePvp : true),
       selectedPlugins: Array.isArray(serverConfig.selectedPlugins) ? serverConfig.selectedPlugins.join(',') : '',
-      totalCost: String(serverConfig.totalCost || 0)
+      totalCost: String(serverConfig.totalCost || 0),
+      customerEmail: String(customerEmail)
     };
 
     console.log('📋 Safe metadata created:', metadata);
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
+      customer_email: customerEmail,
       line_items: [{
         price_data: {
           currency: 'usd',
@@ -420,8 +580,25 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    deploymentsCount: serverDeployments.size
   });
+});
+
+// Debug endpoint to view deployments (remove in production)
+app.get('/debug/deployments', (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  
+  const deployments = Array.from(serverDeployments.entries()).map(([key, value]) => ({
+    key,
+    ...value,
+    // Don't expose passwords in debug
+    password: value.password ? '***' : undefined
+  }));
+  
+  res.json({ deployments });
 });
 
 // Start Server
