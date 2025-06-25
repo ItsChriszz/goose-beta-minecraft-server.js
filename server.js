@@ -302,9 +302,9 @@ app.post('/create-checkout-session', async (req, res) => {
       viewDistance: viewDistance,
       enableWhitelist: Boolean(serverConfig.enableWhitelist),
       enablePvp: Boolean(serverConfig.enablePvp),
-      selectedPlugins: Array.isArray(serverConfig.selectedPlugins) 
-        ? serverConfig.selectedPlugins 
-        : [],
+      // selectedPlugins: Array.isArray(serverConfig.selectedPlugins) 
+      //   ? serverConfig.selectedPlugins 
+      //   : [],
       customerEmail: String(serverConfig.customerEmail || '')
     };
     
