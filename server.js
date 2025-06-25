@@ -2,41 +2,67 @@ require('dotenv').config();
 const express = require('express');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const axios = require('axios');
-const bodyParser = require('body-parser');
 const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware - Allow all CORS for development
-// Add CORS headers globally
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  next();
-});
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// Enhanced CORS configuration
+app.use(cors({
+  origin: process.env.FRONTEND_URL || '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-// Enhanced error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({ error: err.message });
-});
+// Middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
-// Pterodactyl Server Creation
-const createPterodactylServer = async (session) => {
+// Pterodactyl Server Creation Function
+const createPterodactylServer = async (customerEmail, serverConfig) => {
   try {
-    const customerEmail = session.customer_details?.email;
-    if (!customerEmail) throw new Error("No email associated with payment");
+    console.log(`Starting server creation for ${customerEmail}`);
 
-    // Fetch required resources
-    const [user, egg, allocation] = await Promise.all([
-      axios.get(`${process.env.PTERODACTYL_URL}/api/application/users?filter=${encodeURIComponent(customerEmail)}`, {
-        headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` }
-      }),
-      axios.get(`${process.env.PTERODACTYL_URL}/api/application/nests/1/eggs?filter=name=Minecraft%20Java`, {
+    // 1. Find or create user in Pterodactyl
+    let user;
+    try {
+      const userResponse = await axios.get(
+        `${process.env.PTERODACTYL_URL}/api/application/users?filter[email]=${encodeURIComponent(customerEmail)}`,
+        {
+          headers: { 
+            Authorization: `Bearer ${process.env.PTERODACTYL_KEY}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      if (userResponse.data.data.length === 0) {
+        // Create new user if doesn't exist
+        const newUser = await axios.post(
+          `${process.env.PTERODACTYL_URL}/api/application/users`,
+          {
+            email: customerEmail,
+            username: customerEmail.split('@')[0],
+            first_name: 'Minecraft',
+            last_name: 'Player',
+            password: Math.random().toString(36).slice(2) // Random password
+          },
+          {
+            headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` }
+          }
+        );
+        user = newUser.data.attributes;
+      } else {
+        user = userResponse.data.data[0].attributes;
+      }
+    } catch (error) {
+      console.error('User lookup/creation failed:', error.response?.data || error.message);
+      throw new Error('Failed to setup user account');
+    }
+
+    // 2. Get server resources
+    const [egg, allocations] = await Promise.all([
+      axios.get(`${process.env.PTERODACTYL_URL}/api/application/nests/1/eggs/3?include=variables`, {
         headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` }
       }),
       axios.get(`${process.env.PTERODACTYL_URL}/api/application/nodes/1/allocations`, {
@@ -44,209 +70,243 @@ const createPterodactylServer = async (session) => {
       })
     ]);
 
-    const freeAlloc = allocation.data.data.find(a => !a.attributes.assigned);
-    if (!freeAlloc) throw new Error("No server capacity available");
+    // 3. Find free allocation
+    const freeAllocation = allocations.data.data.find(a => !a.attributes.assigned);
+    if (!freeAllocation) {
+      throw new Error('No server capacity available');
+    }
 
-    const { data } = await axios.post(
+    // 4. Prepare environment variables
+    const environment = {
+      BUNGEE_VERSION: 'latest',
+      SERVER_JARFILE: 'server.jar',
+      EULA: 'TRUE',
+      VERSION: serverConfig.minecraftVersion || 'latest',
+      MAX_PLAYERS: serverConfig.maxPlayers || 20,
+      VIEW_DISTANCE: serverConfig.viewDistance || 10,
+      ENABLE_WHITELIST: serverConfig.enableWhitelist ? 'TRUE' : 'FALSE',
+      ENABLE_PVP: serverConfig.enablePvp ? 'TRUE' : 'FALSE'
+    };
+
+    // 5. Create the server
+    const serverResponse = await axios.post(
       `${process.env.PTERODACTYL_URL}/api/application/servers`,
       {
-        name: session.metadata.serverName,
-        user: user.data.data[0].attributes.id,
-        egg: egg.data.data[0].attributes.id,
-        docker_image: egg.data.data[0].attributes.docker_image,
-        startup: "java -Xms128M -Xmx${session.metadata.totalRam * 1024}M -jar server.jar nogui",
-        environment: {
-          EULA: "TRUE",
-          SERVER_JARFILE: "server.jar",
-          VERSION: session.metadata.minecraftVersion
-        },
+        name: serverConfig.serverName,
+        user: user.id,
+        egg: egg.data.attributes.id,
+        docker_image: egg.data.attributes.docker_image,
+        startup: `java -Xms128M -Xmx${serverConfig.totalRam * 1024}M -jar {{SERVER_JARFILE}}`,
+        environment,
         limits: {
-          memory: session.metadata.totalRam * 1024,
-          disk: 1024 * 5,
-          cpu: 100
+          memory: serverConfig.totalRam * 1024,
+          disk: serverConfig.diskSpace || 5120, // 5GB default
+          cpu: serverConfig.cpuLimit || 100,
+          io: 500,
+          threads: null,
+          swap: 0
+        },
+        feature_limits: {
+          databases: 0,
+          allocations: 1,
+          backups: 0
         },
         allocation: {
-          default: freeAlloc.attributes.id
+          default: freeAllocation.attributes.id
+        },
+        deploy: {
+          locations: [1],
+          dedicated_ip: false,
+          port_range: []
         }
       },
-      { headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` } }
+      { 
+        headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` },
+        maxBodyLength: Infinity
+      }
+    );
+
+    // 6. Start the server
+    await axios.post(
+      `${process.env.PTERODACTYL_URL}/api/application/servers/${serverResponse.data.attributes.id}/power`,
+      { signal: 'start' },
+      { headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` }
     );
 
     return {
-      serverId: data.attributes.id,
-      identifier: data.attributes.identifier,
-      ip: freeAlloc.attributes.ip,
-      port: freeAlloc.attributes.port
+      serverId: serverResponse.data.attributes.id,
+      identifier: serverResponse.data.attributes.identifier,
+      ip: freeAllocation.attributes.ip,
+      port: freeAllocation.attributes.port,
+      connectionDetails: `${freeAllocation.attributes.ip}:${freeAllocation.attributes.port}`
     };
+
   } catch (error) {
-    console.error("Deployment failed:", error);
-    await stripe.checkout.sessions.update(session.id, {
-      metadata: {
-        ...session.metadata,
-        deploymentError: error.message,
-        failedAt: new Date().toISOString()
-      }
+    console.error('Server creation failed:', {
+      error: error.response?.data || error.message,
+      stack: error.stack
     });
-    throw error;
+    throw new Error('Failed to create game server');
   }
 };
 
-// Stripe Webhook
-app.post('/webhook', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      console.log(`Processing payment for ${session.customer_details?.email}`);
-      
-      const server = await createPterodactylServer(session);
-      console.log(`Server created: ${server.ip}:${server.port}`);
-    }
-
-    res.json({ received: true });
-  } catch (err) {
-    console.error('Webhook error:', err);
-    res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-});
-
-// Create Checkout Session
-// Update the create-checkout-session endpoint
-// In your backend route handler
+// Stripe Checkout Endpoint
 app.post('/create-checkout-session', async (req, res) => {
   try {
-    const { planId, serverConfig } = req.body;
+    const { serverConfig } = req.body;
+
+    // Validate required fields
+    if (!serverConfig?.serverName || !serverConfig?.totalCost) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        details: 'serverName and totalCost are required'
+      });
+    }
 
     // Create Stripe session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       mode: 'subscription',
       line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: {
-            name: `Minecraft Server - ${serverConfig.serverName}`,
-            description: `${serverConfig.serverType} ${serverConfig.minecraftVersion}`
-          },
-          unit_amount: Math.round(serverConfig.totalCost * 100),
-          recurring: { interval: 'month' }
-        },
+        price: process.env.STRIPE_PRICE_ID, // Your Stripe price ID
         quantity: 1,
       }],
       success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL}/cancel`,
-      metadata: serverConfig
-    });
-
-    // REQUIRED: Verify the URL exists
-    if (!session.url) {
-      throw new Error('Stripe did not generate a checkout URL');
-    }
-
-    // Return BOTH fields
-    res.json({
-      success: true,
-      sessionId: session.id,
-      checkoutUrl: session.url // THIS MUST BE INCLUDED
-    });
-
-  } catch (err) {
-    console.error('Stripe error:', err);
-    res.status(500).json({
-      error: err.message,
-      details: err.type || null
-    });
-  }
-});
-
-    // Create Stripe Price on the fly if using dynamic pricing
-    const price = await stripe.prices.create({
-      unit_amount: Math.round(serverConfig.totalCost * 100),
-      currency: 'usd',
-      product_data: {
-        name: `Minecraft Server - ${serverConfig.serverName}`,
-        description: `${serverConfig.serverType || 'Vanilla'} ${serverConfig.minecraftVersion || 'Latest'}`
-      },
-      recurring: { interval: 'month' }
-    });
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      mode: 'subscription',
-      line_items: [{
-        price: price.id,
-        quantity: 1,
-      }],
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/cancel`,
       metadata: serverConfig,
-      customer_email: serverConfig.customerEmail || 'customer@example.com' // Fallback email
-    });
-
-    console.log('Stripe session created:', {
-      id: session.id,
-      url: session.url,
-      amount: session.amount_total
-    });
-
-    if (!session.url) {
-      throw new Error('Stripe did not return a checkout URL');
-    }
-
-    res.json({ 
-      success: true,
-      sessionId: session.id,
-      checkoutUrl: session.url 
-    });
-
-  } catch (err) {
-    console.error('Stripe session creation failed:', {
-      error: err.message,
-      stack: err.stack,
-      type: err.type,
-      raw: err.raw ? err.raw.message : null
-    });
-    
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to create payment session',
-      details: {
-        message: err.message,
-        type: err.type
+      customer_email: serverConfig.customerEmail,
+      subscription_data: {
+        trial_period_days: serverConfig.trialDays || 0
       }
     });
-  }
-});
 
-// Deployment Status Check
-app.get('/deployment-status/:sessionId', async (req, res) => {
-  try {
-    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId, {
-      expand: ['customer']
-    });
+    if (!session.url) {
+      throw new Error('Stripe did not provide checkout URL');
+    }
 
     res.json({
-      status: session.metadata.deploymentError ? 'failed' : 'completed',
-      customerEmail: session.customer_details?.email,
-      ...session.metadata
+      success: true,
+      sessionId: session.id,
+      checkoutUrl: session.url
     });
 
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.error('Checkout error:', error);
+    res.status(500).json({ 
+      error: 'Failed to create payment session',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
-// Health Check
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date() });
+// Webhook Handler
+app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error('Webhook verification failed:', err);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed':
+        const session = event.data.object;
+        console.log(`Payment completed for ${session.customer_email}`);
+
+        // Create server only if payment succeeded
+        if (session.payment_status === 'paid') {
+          const server = await createPterodactylServer(
+            session.customer_email,
+            session.metadata
+          );
+
+          // Update Stripe metadata with server details
+          await stripe.checkout.sessions.update(session.id, {
+            metadata: {
+              ...session.metadata,
+              serverId: server.serverId,
+              ip: server.ip,
+              port: server.port,
+              status: 'active',
+              connectionDetails: server.connectionDetails
+            }
+          });
+
+          console.log(`Server created: ${server.connectionDetails}`);
+        }
+        break;
+
+      case 'invoice.payment_succeeded':
+        // Handle recurring payments
+        console.log(`Recurring payment for ${event.data.object.customer_email}`);
+        break;
+
+      case 'invoice.payment_failed':
+        // Handle payment failures
+        console.error(`Payment failed for ${event.data.object.customer_email}`);
+        break;
+    }
+  } catch (error) {
+    console.error('Webhook processing error:', error);
+    // Update Stripe metadata with error if possible
+    if (event.type === 'checkout.session.completed') {
+      await stripe.checkout.sessions.update(event.data.object.id, {
+        metadata: {
+          ...event.data.object.metadata,
+          error: error.message,
+          status: 'failed'
+        }
+      });
+    }
+  }
+
+  res.json({ received: true });
 });
 
+// Server Status Endpoint
+app.get('/server-status/:sessionId', async (req, res) => {
+  try {
+    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId);
+    
+    if (!session.metadata.status) {
+      return res.json({ status: 'processing' });
+    }
+
+    if (session.metadata.status === 'failed') {
+      return res.status(500).json({
+        status: 'failed',
+        error: session.metadata.error || 'Server creation failed'
+      });
+    }
+
+    res.json({
+      status: session.metadata.status,
+      ip: session.metadata.ip,
+      port: session.metadata.port,
+      connectionDetails: session.metadata.connectionDetails,
+      serverName: session.metadata.serverName
+    });
+
+  } catch (error) {
+    console.error('Status check error:', error);
+    res.status(500).json({ 
+      error: 'Failed to check server status',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Start Server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`CORS enabled for all origins`);
   console.log(`Stripe webhook URL: ${process.env.FRONTEND_URL}/webhook`);
+  console.log(`Pterodactyl URL: ${process.env.PTERODACTYL_URL}`);
 });
