@@ -8,20 +8,26 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors({ origin: process.env.FRONTEND_URL }));
+// Middleware - Allow all CORS for development
+app.use(cors({ origin: '*' }));
 app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
-// ✅ 1. Improved Pterodactyl Server Creation
+// Enhanced error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ error: err.message });
+});
+
+// Pterodactyl Server Creation
 const createPterodactylServer = async (session) => {
   try {
-    // Get email from Stripe session (✅ Now from customer_details)
     const customerEmail = session.customer_details?.email;
     if (!customerEmail) throw new Error("No email associated with payment");
 
-    // Fetch Pterodactyl resources
+    // Fetch required resources
     const [user, egg, allocation] = await Promise.all([
-      axios.get(`${process.env.PTERODACTYL_URL}/api/application/users?filter=email=${encodeURIComponent(customerEmail)}`, {
+      axios.get(`${process.env.PTERODACTYL_URL}/api/application/users?filter=${encodeURIComponent(customerEmail)}`, {
         headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` }
       }),
       axios.get(`${process.env.PTERODACTYL_URL}/api/application/nests/1/eggs?filter=name=Minecraft%20Java`, {
@@ -32,11 +38,9 @@ const createPterodactylServer = async (session) => {
       })
     ]);
 
-    // Find free allocation
     const freeAlloc = allocation.data.data.find(a => !a.attributes.assigned);
     if (!freeAlloc) throw new Error("No server capacity available");
 
-    // Create server
     const { data } = await axios.post(
       `${process.env.PTERODACTYL_URL}/api/application/servers`,
       {
@@ -68,10 +72,8 @@ const createPterodactylServer = async (session) => {
       ip: freeAlloc.attributes.ip,
       port: freeAlloc.attributes.port
     };
-
   } catch (error) {
-    console.error("Deployment failed:", error.message);
-    // ✅ Record error in Stripe metadata
+    console.error("Deployment failed:", error);
     await stripe.checkout.sessions.update(session.id, {
       metadata: {
         ...session.metadata,
@@ -83,7 +85,7 @@ const createPterodactylServer = async (session) => {
   }
 };
 
-// ✅ 2. Webhook handler using Stripe email
+// Stripe Webhook
 app.post('/webhook', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -106,32 +108,32 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), async (req, r
   }
 });
 
-// ✅ 3. Simplified checkout endpoint
+// Create Checkout Session
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { planId, serverConfig } = req.body;
+
+    if (!planId || !serverConfig) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       mode: 'subscription',
       ui_mode: 'hosted',
-      customer_email: serverConfig.customerEmail, // Optional: pre-fill email
+      customer_email: serverConfig.customerEmail,
       line_items: [{
-        price_data: {
-          currency: 'usd',
-          product_data: { 
-            name: `Minecraft Server - ${serverConfig.serverName}`,
-            description: `${serverConfig.serverType} ${serverConfig.minecraftVersion}`
-          },
-          unit_amount: Math.round(serverConfig.totalCost * 100),
-          recurring: { interval: 'month' }
-        },
+        price: planId, // Use Stripe Price ID directly
         quantity: 1,
       }],
-      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/cancel`,
-      metadata: serverConfig // No need for separate email anymore
+      success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/cancel`,
+      metadata: serverConfig
     });
+
+    if (!session.url) {
+      throw new Error('Stripe session URL not generated');
+    }
 
     res.json({ 
       sessionId: session.id,
@@ -139,27 +141,23 @@ app.post('/create-checkout-session', async (req, res) => {
     });
 
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Checkout session error:', err);
+    res.status(500).json({ 
+      error: err.message || 'Failed to create checkout session',
+      details: err.type || null
+    });
   }
 });
 
-// ✅ 4. Enhanced status endpoint
+// Deployment Status Check
 app.get('/deployment-status/:sessionId', async (req, res) => {
   try {
     const session = await stripe.checkout.sessions.retrieve(req.params.sessionId, {
       expand: ['customer']
     });
 
-    if (session.metadata.deploymentError) {
-      return res.status(500).json({ 
-        status: 'failed',
-        error: session.metadata.deploymentError,
-        customerEmail: session.customer_details?.email
-      });
-    }
-
     res.json({
-      status: 'completed',
+      status: session.metadata.deploymentError ? 'failed' : 'completed',
       customerEmail: session.customer_details?.email,
       ...session.metadata
     });
@@ -169,7 +167,13 @@ app.get('/deployment-status/:sessionId', async (req, res) => {
   }
 });
 
+// Health Check
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', timestamp: new Date() });
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`CORS enabled for all origins`);
   console.log(`Stripe webhook URL: ${process.env.FRONTEND_URL}/webhook`);
 });
