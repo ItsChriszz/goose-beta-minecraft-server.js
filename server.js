@@ -551,6 +551,29 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
+// Redirect to Stripe checkout endpoint - NEW
+app.get('/checkout/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    console.log('🔗 Redirecting to Stripe checkout for session:', sessionId);
+    
+    // Get session from Stripe to get the checkout URL
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    
+    if (!session || !session.url) {
+      return res.status(404).json({ error: 'Checkout session not found or expired' });
+    }
+    
+    // Redirect to Stripe's hosted checkout page
+    res.redirect(session.url);
+    
+  } catch (err) {
+    console.error('❌ Error redirecting to checkout:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get session details endpoint
 app.get('/session-details/:sessionId', async (req, res) => {
   try {
