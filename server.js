@@ -110,19 +110,52 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), async (req, r
 
 // Create Checkout Session
 // Update the create-checkout-session endpoint
+// In your backend route handler
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { planId, serverConfig } = req.body;
 
-    // Validate input more thoroughly
-    if (!planId || !serverConfig || !serverConfig.serverName || !serverConfig.totalCost) {
-      return res.status(400).json({ 
-        error: 'Missing required fields',
-        details: {
-          requires: ['planId', 'serverConfig with serverName and totalCost']
-        }
-      });
+    // Create Stripe session
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'subscription',
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: {
+            name: `Minecraft Server - ${serverConfig.serverName}`,
+            description: `${serverConfig.serverType} ${serverConfig.minecraftVersion}`
+          },
+          unit_amount: Math.round(serverConfig.totalCost * 100),
+          recurring: { interval: 'month' }
+        },
+        quantity: 1,
+      }],
+      success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/cancel`,
+      metadata: serverConfig
+    });
+
+    // REQUIRED: Verify the URL exists
+    if (!session.url) {
+      throw new Error('Stripe did not generate a checkout URL');
     }
+
+    // Return BOTH fields
+    res.json({
+      success: true,
+      sessionId: session.id,
+      checkoutUrl: session.url // THIS MUST BE INCLUDED
+    });
+
+  } catch (err) {
+    console.error('Stripe error:', err);
+    res.status(500).json({
+      error: err.message,
+      details: err.type || null
+    });
+  }
+});
 
     // Create Stripe Price on the fly if using dynamic pricing
     const price = await stripe.prices.create({
