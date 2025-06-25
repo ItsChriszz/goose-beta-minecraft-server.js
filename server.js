@@ -266,26 +266,31 @@ if (!serverConfig || typeof serverConfig !== 'object') {
 }
 
 
-    if (errors.length > 0) {
-      console.log('❌ Validation failed:', errors);
-      return res.status(400).json({
-        error: 'Missing required server configuration',
-        errors: errors,
-        received: {
-          planId: planId || 'missing',
-          billingCycle: billingCycle || 'missing',
-          finalPrice: finalPrice || 'missing',
-          serverConfig: serverConfig ? 'present' : 'missing',
-          serverConfigSample: serverConfig ? {
-            serverName: serverConfig.serverName || 'missing',
-            selectedServerType: serverConfig.selectedServerType || 'missing',
-            minecraftVersion: serverConfig.minecraftVersion || 'missing',
-            totalCost: serverConfig.totalCost || 'missing'
-          } : 'missing'
-        },
-        timestamp: new Date().toISOString()
-      });
-    }
+if (errors.length > 0) {
+  console.log('❌ Validation failed:', errors);
+  console.log('📦 Full request body:', JSON.stringify(req.body, null, 2));
+
+  return res.status(400).json({
+    error: 'Missing required server configuration',
+    errors,
+    received: {
+      planId: planId ?? 'missing',
+      billingCycle: billingCycle ?? 'missing',
+      finalPrice: finalPrice ?? 'missing',
+      serverConfig: serverConfig ? {
+        serverName: serverConfig.serverName ?? 'missing',
+        selectedServerType: serverConfig.selectedServerType ?? 'missing',
+        minecraftVersion: serverConfig.minecraftVersion ?? 'missing',
+        totalCost: serverConfig.totalCost ?? 'missing',
+        totalRam: serverConfig.totalRam ?? 'missing',
+        maxPlayers: serverConfig.maxPlayers ?? 'missing',
+        viewDistance: serverConfig.viewDistance ?? 'missing',
+      } : 'missing'
+    },
+    timestamp: new Date().toISOString()
+  });
+}
+
 
     console.log('✅ Validation passed!');
 
