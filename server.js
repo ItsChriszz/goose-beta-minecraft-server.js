@@ -53,7 +53,7 @@ const createSafeMetadata = (serverConfig, planId, totalRam, maxPlayers, viewDist
     viewDistance: String(Number.isFinite(viewDistance) ? viewDistance : 0),
     enableWhitelist: String(Boolean(serverConfig.enableWhitelist)),
     enablePvp: String(Boolean(serverConfig.enablePvp)),
-    selectedPlugins: String(selectedPluginsCount),
+    // selectedPlugins: String(selectedPluginsCount),
     customerEmail: String(serverConfig.customerEmail || ''),
     totalPrice: String(Number.isFinite(totalPrice) ? totalPrice.toFixed(2) : '0.00')
   };
@@ -112,7 +112,7 @@ app.post('/create-checkout-session', async (req, res) => {
         'Enable Whitelist': `${serverConfig?.enableWhitelist} (${typeof serverConfig?.enableWhitelist})`,
         'Enable PvP': `${serverConfig?.enablePvp} (${typeof serverConfig?.enablePvp})`,
         'Customer Email': serverConfig?.customerEmail || 'MISSING',
-        'Selected Plugins': Array.isArray(serverConfig?.selectedPlugins) ? `[${serverConfig.selectedPlugins.length} plugins]` : 'Invalid/Missing'
+        // 'Selected Plugins': Array.isArray(serverConfig?.selectedPlugins) ? `[${serverConfig.selectedPlugins.length} plugins]` : 'Invalid/Missing'
       })
 
       // Individual field validation logging
