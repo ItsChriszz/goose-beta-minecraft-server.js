@@ -8,27 +8,20 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Deployment tracking (in-memory for demo, use DB in production)
-const deployments = new Map();
-
-// Enhanced logging
-const log = (event, data = {}) => {
-  console.log(`[${new Date().toISOString()}] ${event}`, JSON.stringify(data, null, 2));
-};
-
 // Middleware
 app.use(cors({ origin: process.env.FRONTEND_URL }));
 app.use(bodyParser.json());
 
-// 1. Pterodactyl Server Creation
+// ✅ 1. Improved Pterodactyl Server Creation
 const createPterodactylServer = async (session) => {
   try {
-    const { metadata } = session;
-    log('Starting Pterodactyl server creation', { metadata });
+    // Get email from Stripe session (✅ Now from customer_details)
+    const customerEmail = session.customer_details?.email;
+    if (!customerEmail) throw new Error("No email associated with payment");
 
-    // Fetch available resources from Pterodactyl
+    // Fetch Pterodactyl resources
     const [user, egg, allocation] = await Promise.all([
-      axios.get(`${process.env.PTERODACTYL_URL}/api/application/users?filter=email=${metadata.customerEmail}`, {
+      axios.get(`${process.env.PTERODACTYL_URL}/api/application/users?filter=email=${encodeURIComponent(customerEmail)}`, {
         headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` }
       }),
       axios.get(`${process.env.PTERODACTYL_URL}/api/application/nests/1/eggs?filter=name=Minecraft%20Java`, {
@@ -39,157 +32,144 @@ const createPterodactylServer = async (session) => {
       })
     ]);
 
-    // Find first free allocation
-    const freeAllocation = allocation.data.data.find(a => !a.attributes.assigned);
-    if (!freeAllocation) throw new Error('No free allocations available');
-
-    // Server configuration
-    const serverConfig = {
-      name: metadata.serverName,
-      user: user.data.data[0].attributes.id,
-      egg: egg.data.data[0].attributes.id,
-      docker_image: egg.data.data[0].attributes.docker_image,
-      startup: `java -Xms128M -Xmx${metadata.totalRam * 1024}M -jar server.jar nogui`,
-      environment: {
-        SERVER_JARFILE: 'server.jar',
-        BUILD_NUMBER: 'latest',
-        EULA: 'TRUE'
-      },
-      limits: {
-        memory: metadata.totalRam * 1024,
-        disk: 1024 * 5, // 5GB
-        io: 500,
-        cpu: 100
-      },
-      feature_limits: {
-        databases: 1,
-        backups: 3
-      },
-      allocation: {
-        default: freeAllocation.attributes.id
-      }
-    };
+    // Find free allocation
+    const freeAlloc = allocation.data.data.find(a => !a.attributes.assigned);
+    if (!freeAlloc) throw new Error("No server capacity available");
 
     // Create server
-    const { data: server } = await axios.post(
+    const { data } = await axios.post(
       `${process.env.PTERODACTYL_URL}/api/application/servers`,
-      serverConfig,
+      {
+        name: session.metadata.serverName,
+        user: user.data.data[0].attributes.id,
+        egg: egg.data.data[0].attributes.id,
+        docker_image: egg.data.data[0].attributes.docker_image,
+        startup: "java -Xms128M -Xmx${session.metadata.totalRam * 1024}M -jar server.jar nogui",
+        environment: {
+          EULA: "TRUE",
+          SERVER_JARFILE: "server.jar",
+          VERSION: session.metadata.minecraftVersion
+        },
+        limits: {
+          memory: session.metadata.totalRam * 1024,
+          disk: 1024 * 5,
+          cpu: 100
+        },
+        allocation: {
+          default: freeAlloc.attributes.id
+        }
+      },
       { headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` } }
     );
 
-    const deployment = {
-      status: 'active',
-      serverId: server.attributes.id,
-      identifier: server.attributes.identifier,
-      allocation: freeAllocation.attributes.id,
-      ip: freeAllocation.attributes.ip,
-      port: freeAllocation.attributes.port,
-      createdAt: new Date().toISOString()
+    return {
+      serverId: data.attributes.id,
+      identifier: data.attributes.identifier,
+      ip: freeAlloc.attributes.ip,
+      port: freeAlloc.attributes.port
     };
 
-    deployments.set(session.id, deployment);
-    log('Server created successfully', deployment);
-    return deployment;
-
   } catch (error) {
-    log('Pterodactyl creation failed', { error: error.message });
+    console.error("Deployment failed:", error.message);
+    // ✅ Record error in Stripe metadata
+    await stripe.checkout.sessions.update(session.id, {
+      metadata: {
+        ...session.metadata,
+        deploymentError: error.message,
+        failedAt: new Date().toISOString()
+      }
+    });
     throw error;
   }
 };
 
-// 2. Stripe Webhook Handler
+// ✅ 2. Webhook handler using Stripe email
 app.post('/webhook', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
 
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    log('Stripe webhook received', { type: event.type });
-
+    
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
-      const deployment = await createPterodactylServer(session);
+      console.log(`Processing payment for ${session.customer_details?.email}`);
       
-      // Update Stripe metadata with server details
-      await stripe.checkout.sessions.update(session.id, {
-        metadata: {
-          ...session.metadata,
-          serverId: deployment.serverId,
-          serverIp: `${deployment.ip}:${deployment.port}`
-        }
-      });
+      const server = await createPterodactylServer(session);
+      console.log(`Server created: ${server.ip}:${server.port}`);
     }
 
     res.json({ received: true });
   } catch (err) {
-    log('Webhook processing error', { error: err.message });
+    console.error('Webhook error:', err);
     res.status(400).send(`Webhook Error: ${err.message}`);
   }
 });
 
-// 3. Checkout Endpoint
+// ✅ 3. Simplified checkout endpoint
 app.post('/create-checkout-session', async (req, res) => {
   try {
-    const { plan, serverConfig, customerEmail } = req.body;
-    
+    const { planId, serverConfig } = req.body;
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       mode: 'subscription',
-      ui_mode: 'hosted'
+      ui_mode: 'hosted',
+      customer_email: serverConfig.customerEmail, // Optional: pre-fill email
       line_items: [{
         price_data: {
           currency: 'usd',
-          product_data: { name: `Minecraft Server - ${serverConfig.name}` },
-          unit_amount: plan.price * 100,
+          product_data: { 
+            name: `Minecraft Server - ${serverConfig.serverName}`,
+            description: `${serverConfig.serverType} ${serverConfig.minecraftVersion}`
+          },
+          unit_amount: Math.round(serverConfig.totalCost * 100),
           recurring: { interval: 'month' }
         },
         quantity: 1,
       }],
       success_url: `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL}/cancel`,
-      metadata: {
-        ...serverConfig,
-        customerEmail,
-        planId: plan.id
-      }
+      metadata: serverConfig // No need for separate email anymore
     });
 
-    log('Checkout session created', { sessionId: session.id });
-    res.json({ sessionId: session.id, checkoutUrl: session.url });
+    res.json({ 
+      sessionId: session.id,
+      checkoutUrl: session.url 
+    });
 
   } catch (err) {
-    log('Checkout creation failed', { error: err.message });
     res.status(500).json({ error: err.message });
   }
 });
 
-// 4. Deployment Status Endpoint
-app.get('/deployment/:sessionId', async (req, res) => {
+// ✅ 4. Enhanced status endpoint
+app.get('/deployment-status/:sessionId', async (req, res) => {
   try {
-    const deployment = deployments.get(req.params.sessionId);
-    if (!deployment) throw new Error('Deployment not found');
+    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId, {
+      expand: ['customer']
+    });
 
-    // Verify with Pterodactyl
-    const { data } = await axios.get(
-      `${process.env.PTERODACTYL_URL}/api/application/servers/${deployment.serverId}`,
-      { headers: { Authorization: `Bearer ${process.env.PTERODACTYL_KEY}` } }
-    );
+    if (session.metadata.deploymentError) {
+      return res.status(500).json({ 
+        status: 'failed',
+        error: session.metadata.deploymentError,
+        customerEmail: session.customer_details?.email
+      });
+    }
 
     res.json({
-      status: data.attributes.status,
-      ip: deployment.ip,
-      port: deployment.port,
-      name: data.attributes.name
+      status: 'completed',
+      customerEmail: session.customer_details?.email,
+      ...session.metadata
     });
+
   } catch (err) {
-    log('Deployment status error', { error: err.message });
-    res.status(404).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.listen(PORT, () => {
-  log(`Server started on port ${PORT}`, {
-    stripe: process.env.STRIPE_SECRET_KEY ? 'Ready' : 'Not Configured',
-    pterodactyl: process.env.PTERODACTYL_KEY ? 'Ready' : 'Not Configured'
-  });
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Stripe webhook URL: ${process.env.FRONTEND_URL}/webhook`);
 });
