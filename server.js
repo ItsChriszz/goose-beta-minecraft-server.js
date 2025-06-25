@@ -213,34 +213,58 @@ app.post('/create-checkout-session', async (req, res) => {
     console.log('  serverConfig:', serverConfig, '(type:', typeof serverConfig, ')');
 
     // SIMPLIFIED VALIDATION - Just check if essential fields exist
-    const errors = [];
-    
-    if (!planId || typeof planId !== 'string') {
-      errors.push('planId is missing or invalid');
-    }
-    if (!billingCycle || typeof billingCycle !== 'string') {
-      errors.push('billingCycle is missing or invalid');
-    }
-    if (!finalPrice || typeof finalPrice !== 'number' || finalPrice <= 0) {
-      errors.push('finalPrice is missing or invalid');
-    }
-    if (!serverConfig || typeof serverConfig !== 'object') {
-      errors.push('serverConfig is missing or invalid');
-    } else {
-      // Check essential serverConfig fields
-      if (!serverConfig.serverName || typeof serverConfig.serverName !== 'string' || !serverConfig.serverName.trim()) {
-        errors.push('serverConfig.serverName is missing or invalid');
-      }
-      if (!serverConfig.selectedServerType || typeof serverConfig.selectedServerType !== 'string') {
-        errors.push('serverConfig.selectedServerType is missing or invalid');
-      }
-      if (!serverConfig.minecraftVersion || typeof serverConfig.minecraftVersion !== 'string') {
-        errors.push('serverConfig.minecraftVersion is missing or invalid');
-      }
-      if (typeof serverConfig.totalCost !== 'number' || serverConfig.totalCost <= 0) {
-        errors.push('serverConfig.totalCost is missing or invalid');
-      }
-    }
+// SIMPLIFIED VALIDATION - Just check if essential fields exist
+const errors = [];
+
+if (!planId || typeof planId !== 'string') {
+  errors.push('planId is missing or invalid');
+}
+
+if (!billingCycle || typeof billingCycle !== 'string') {
+  errors.push('billingCycle is missing or invalid');
+}
+
+if (!finalPrice || typeof finalPrice !== 'number' || finalPrice <= 0) {
+  errors.push('finalPrice is missing or invalid');
+}
+
+if (!serverConfig || typeof serverConfig !== 'object') {
+  errors.push('serverConfig is missing or invalid');
+} else {
+  // Check essential serverConfig fields
+  if (!serverConfig.serverName || typeof serverConfig.serverName !== 'string' || !serverConfig.serverName.trim()) {
+    errors.push('serverConfig.serverName is missing or invalid');
+  }
+
+  if (!serverConfig.selectedServerType || typeof serverConfig.selectedServerType !== 'string') {
+    errors.push('serverConfig.selectedServerType is missing or invalid');
+  }
+
+  if (!serverConfig.minecraftVersion || typeof serverConfig.minecraftVersion !== 'string') {
+    errors.push('serverConfig.minecraftVersion is missing or invalid');
+  }
+
+  const totalCost = Number(serverConfig.totalCost);
+  if (isNaN(totalCost) || totalCost <= 0) {
+    errors.push('serverConfig.totalCost is missing or invalid');
+  }
+
+  const totalRam = Number(serverConfig.totalRam);
+  if (isNaN(totalRam) || totalRam <= 0) {
+    errors.push('serverConfig.totalRam is missing or invalid');
+  }
+
+  const maxPlayers = Number(serverConfig.maxPlayers);
+  if (isNaN(maxPlayers) || maxPlayers <= 0) {
+    errors.push('serverConfig.maxPlayers is missing or invalid');
+  }
+
+  const viewDistance = Number(serverConfig.viewDistance);
+  if (isNaN(viewDistance) || viewDistance <= 0) {
+    errors.push('serverConfig.viewDistance is missing or invalid');
+  }
+}
+
 
     if (errors.length > 0) {
       console.log('❌ Validation failed:', errors);
