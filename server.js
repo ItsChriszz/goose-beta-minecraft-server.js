@@ -48,9 +48,10 @@ app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
 app.use(bodyParser.json());
 app.use(cors(corsOptions));
 
-// Fetch user/egg/allocation IDs
-async function fetchPterodactylMeta(email = 'admin@goosehosting.com') {
+// Create or find user account for the customer
+async function createOrFindUser(customerEmail, serverName) {
   try {
+    // First, try to find existing user
     const usersRes = await axios.get(`${PTERODACTYL_BASE}/users`, {
       headers: {
         Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
@@ -58,13 +59,71 @@ async function fetchPterodactylMeta(email = 'admin@goosehosting.com') {
       }
     });
 
-    console.log('User API response:', usersRes.data);
+    const existingUser = usersRes.data.data.find(u => u.attributes.email === customerEmail);
+    
+    if (existingUser) {
+      console.log('✅ Found existing user:', existingUser.attributes.email);
+      return existingUser.attributes.id;
+    }
 
-    const userData = usersRes.data.data;
-    if (!Array.isArray(userData)) throw new Error('Unexpected response format for users');
+    // Create new user if not found
+    console.log('👤 Creating new user for:', customerEmail);
+    
+    // Generate username from email (remove @ and domain)
+    const username = customerEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    
+    // Split name from email or use defaults
+    const nameParts = customerEmail.split('@')[0].split('.');
+    const firstName = nameParts[0] || 'User';
+    const lastName = nameParts[1] || 'GooseHosting';
 
-    const user = userData.find(u => u.attributes.email === email);
-    if (!user) throw new Error(`User with email ${email} not found.`);
+    const userData = {
+      email: customerEmail,
+      username: username + '_' + Date.now().toString().slice(-4), // Add random suffix to avoid conflicts
+      first_name: firstName.charAt(0).toUpperCase() + firstName.slice(1),
+      last_name: lastName.charAt(0).toUpperCase() + lastName.slice(1),
+      password: generateRandomPassword(), // We'll create this function
+      root_admin: false
+    };
+
+    const response = await axios.post(`${PTERODACTYL_BASE}/users`, userData, {
+      headers: {
+        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
+        'Content-Type': 'application/json',
+        Accept: 'Application/vnd.pterodactyl.v1+json'
+      }
+    });
+
+    const userId = response.data.attributes.id;
+    console.log('✅ Created new user:', {
+      id: userId,
+      email: customerEmail,
+      username: userData.username
+    });
+
+    return userId;
+
+  } catch (err) {
+    console.error('❌ Failed to create/find user:', err.response?.data || err.message);
+    // Fallback to admin user if user creation fails
+    return 1; // Default admin user ID
+  }
+}
+
+// Generate secure random password
+function generateRandomPassword(length = 12) {
+  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  let password = '';
+  for (let i = 0; i < length; i++) {
+    password += charset.charAt(Math.floor(Math.random() * charset.length));
+  }
+  return password;
+}
+// Fetch user/egg/allocation IDs
+async function fetchPterodactylMeta(customerEmail = 'admin@goosehosting.com') {
+  try {
+    // Create or find user account
+    const userId = await createOrFindUser(customerEmail);
 
     const eggsRes = await axios.get(`${PTERODACTYL_BASE}/nests/1/eggs`, {
       headers: {
@@ -101,11 +160,12 @@ async function fetchPterodactylMeta(email = 'admin@goosehosting.com') {
     if (!allocation) throw new Error('No free allocation found.');
 
     return {
-      userId: user.attributes.id,
+      userId: userId,
       eggName: minecraftEgg.attributes.name,
       eggId: minecraftEgg.attributes.id,
       dockerImage: minecraftEgg.attributes.docker_image,
       startup: minecraftEgg.attributes.startup,
+      nodeId: nodeId,
       allocationId: allocation.attributes.id
     };
   } catch (err) {
@@ -121,7 +181,11 @@ async function createPterodactylServer(session) {
     console.log('==========================================');
     console.log('📋 Session Metadata:', session.metadata);
 
-    const config = await fetchPterodactylMeta();
+    // Get customer email from Stripe session
+    const customerEmail = session.customer_details?.email || session.customer_email || 'admin@goosehosting.com';
+    console.log('📧 Customer Email:', customerEmail);
+
+    const config = await fetchPterodactylMeta(customerEmail);
     
     // Extract individual metadata fields (all are strings from Stripe)
     const serverName = session.metadata.serverName || `GooseServer-${Date.now()}`;
@@ -146,6 +210,22 @@ async function createPterodactylServer(session) {
     console.log('  • Whitelist:', enableWhitelist);
     console.log('  • PvP:', enablePvp);
     console.log('  • Plugins:', selectedPlugins.length > 0 ? selectedPlugins.join(', ') : 'None');
+
+    // Get the allocation info BEFORE creating the server
+    const allocRes = await axios.get(`${PTERODACTYL_BASE}/nodes/${config.nodeId}/allocations`, {
+      headers: {
+        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
+        Accept: 'application/json'
+      }
+    });
+
+    const allocation = allocRes.data.data.find(a => !a.attributes.assigned);
+    if (!allocation) throw new Error('No free allocation found.');
+
+    const serverPort = allocation.attributes.port;
+    const serverAddress = `mc.goosehosting.com:${serverPort}`;
+
+    console.log('🌐 Server Address:', serverAddress);
 
     // Determine server jar based on server type
     let serverJar = 'server.jar';
@@ -217,7 +297,7 @@ async function createPterodactylServer(session) {
         backups: planId === 'starter' ? 3 : planId === 'pro' ? 10 : 25
       },
       allocation: {
-        default: config.allocationId
+        default: allocation.attributes.id
       }
     };
 
@@ -234,22 +314,31 @@ async function createPterodactylServer(session) {
 
     const serverId = response.data.attributes?.id;
     const serverUuid = response.data.attributes?.uuid;
-    
-    // Get the actual server IP from the allocation
-    const serverIp = allocRes.data.data.find(a => a.attributes.id === config.allocationId)?.attributes.ip || 'mc.goosehosting.com';
-    const serverPort = allocRes.data.data.find(a => a.attributes.id === config.allocationId)?.attributes.port || '25565';
 
     console.log('✅ Server created successfully!');
     console.log('📦 Server Details:');
     console.log('  • Server ID:', serverId);
     console.log('  • Server UUID:', serverUuid);
-    console.log('  • Server IP:', serverIp + ':' + serverPort);
+    console.log('  • Server Address:', serverAddress);
     console.log('  • Name:', serverName);
     console.log('  • User ID:', config.userId);
-    console.log('  • Allocation ID:', config.allocationId);
+    console.log('  • Allocation ID:', allocation.attributes.id);
     console.log('  • Egg ID:', config.eggId);
     console.log('  • Docker Image:', config.dockerImage);
     console.log('==========================================');
+
+    // Update the Stripe session with server details for success page
+    await stripe.checkout.sessions.update(session.id, {
+      metadata: {
+        ...session.metadata,
+        serverId: String(serverId),
+        serverUuid: String(serverUuid),
+        serverAddress: serverAddress,
+        serverStatus: 'created'
+      }
+    });
+
+    console.log('📝 Updated Stripe session with server details');
 
     // If plugins are selected and it's a supported server type, we could install them here
     if (selectedPlugins.length > 0 && (serverType === 'paper' || serverType === 'spigot')) {
@@ -263,8 +352,7 @@ async function createPterodactylServer(session) {
       serverId,
       serverUuid,
       serverName,
-      serverIp,
-      serverPort,
+      serverAddress,
       message: 'Server created successfully'
     };
 
