@@ -177,7 +177,7 @@ class PaymentHandler {
     console.log('💰 Price data for Stripe:', priceData);
 
     // Create comprehensive metadata for the checkout session
-    const sessionMetadata = this.createSessionMetadata(serverConfig, billingCycle, cycle, validatedFinalPrice);
+    const sessionMetadata = this.createSessionMetadata(serverConfig, billingCycle, cycle, validatedFinalPrice, PlanId);
 
     console.log('📋 Session metadata:', sessionMetadata);
 
