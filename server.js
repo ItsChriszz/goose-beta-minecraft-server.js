@@ -1,4 +1,4 @@
-// server.js - Complete Minimal Backend with Detailed Debugging
+// server.js - Complete Fixed Backend with Enhanced Validation
 const express = require('express');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
@@ -100,7 +100,7 @@ app.post('/debug-request', (req, res) => {
   });
 });
 
-// MAIN ENDPOINT: Create Checkout Session with Detailed Debugging
+// MAIN ENDPOINT: Create Checkout Session with Enhanced Validation
 app.post('/create-checkout-session', async (req, res) => {
   console.log('🦆 === CHECKOUT SESSION REQUEST ===');
   console.log('🦆 Request received at:', new Date().toISOString());
@@ -127,71 +127,94 @@ app.post('/create-checkout-session', async (req, res) => {
       });
     }
 
-    // Build detailed error response
+    // Build detailed error response with enhanced validation
     const errors = [];
     const details = {};
 
-    if (!planId) {
-      errors.push('planId is missing');
-      details.planId = 'missing';
+    // Validate top-level fields
+    if (!planId || typeof planId !== 'string') {
+      errors.push('planId must be a non-empty string');
+      details.planId = planId ? 'invalid type' : 'missing';
     } else {
       details.planId = 'present';
     }
 
-    if (!billingCycle) {
-      errors.push('billingCycle is missing');
-      details.billingCycle = 'missing';
+    if (!billingCycle || typeof billingCycle !== 'string') {
+      errors.push('billingCycle must be a non-empty string');
+      details.billingCycle = billingCycle ? 'invalid type' : 'missing';
     } else {
       details.billingCycle = 'present';
     }
 
-    if (!finalPrice || finalPrice <= 0) {
-      errors.push('finalPrice is missing or invalid');
+    if (!finalPrice || typeof finalPrice !== 'number' || finalPrice <= 0) {
+      errors.push('finalPrice must be a positive number');
       details.finalPrice = 'missing or invalid';
     } else {
       details.finalPrice = 'present';
     }
 
-    if (!serverConfig) {
-      errors.push('serverConfig is missing');
-      details.serverConfig = 'missing';
+    if (!serverConfig || typeof serverConfig !== 'object') {
+      errors.push('serverConfig must be an object');
+      details.serverConfig = 'missing or invalid';
     } else {
       details.serverConfig = 'present';
       
-      // Check serverConfig fields
-      const requiredFields = [
-        'serverName', 'planId', 'selectedServerType', 
-        'minecraftVersion', 'totalCost', 'totalRam', 
-        'maxPlayers', 'viewDistance'
+      // Enhanced serverConfig validation with better error messages
+      const requiredStringFields = [
+        { field: 'serverName', required: true },
+        { field: 'planId', required: true },
+        { field: 'selectedServerType', required: true },
+        { field: 'minecraftVersion', required: true }
       ];
       
+      const requiredNumberFields = [
+        { field: 'totalCost', required: true, min: 0 },
+        { field: 'totalRam', required: true, min: 1 },
+        { field: 'maxPlayers', required: true, min: 1 },
+        { field: 'viewDistance', required: true, min: 1 }
+      ];
+
+      const requiredBooleanFields = [
+        { field: 'enableWhitelist', required: true },
+        { field: 'enablePvp', required: true }
+      ];
+
       details.serverConfigFields = {};
-      requiredFields.forEach(field => {
+
+      // Validate string fields
+      requiredStringFields.forEach(({ field, required }) => {
         const value = serverConfig[field];
-        if (value === undefined || value === null || value === '') {
-          errors.push(`serverConfig.${field} is missing`);
-          details.serverConfigFields[field] = 'missing';
+        if (required && (!value || typeof value !== 'string' || !value.trim())) {
+          errors.push(`serverConfig.${field} must be a non-empty string`);
+          details.serverConfigFields[field] = value ? 'empty or invalid type' : 'missing';
         } else {
           details.serverConfigFields[field] = 'present';
         }
       });
 
-      // Check boolean fields
-      if (serverConfig.enableWhitelist === undefined) {
-        errors.push('serverConfig.enableWhitelist is missing');
-        details.serverConfigFields.enableWhitelist = 'missing';
-      } else {
-        details.serverConfigFields.enableWhitelist = 'present';
-      }
+      // Validate number fields
+      requiredNumberFields.forEach(({ field, required, min }) => {
+        const value = serverConfig[field];
+        if (required && (typeof value !== 'number' || isNaN(value) || value < min)) {
+          errors.push(`serverConfig.${field} must be a number >= ${min}`);
+          details.serverConfigFields[field] = 'missing or invalid';
+        } else {
+          details.serverConfigFields[field] = 'present';
+        }
+      });
 
-      if (serverConfig.enablePvp === undefined) {
-        errors.push('serverConfig.enablePvp is missing');
-        details.serverConfigFields.enablePvp = 'missing';
-      } else {
-        details.serverConfigFields.enablePvp = 'present';
-      }
+      // Validate boolean fields
+      requiredBooleanFields.forEach(({ field, required }) => {
+        const value = serverConfig[field];
+        if (required && typeof value !== 'boolean') {
+          errors.push(`serverConfig.${field} must be a boolean`);
+          details.serverConfigFields[field] = 'missing or invalid type';
+        } else {
+          details.serverConfigFields[field] = 'present';
+        }
+      });
 
-      // Check array fields
+      // Validate array fields
       if (!Array.isArray(serverConfig.selectedPlugins)) {
         errors.push('serverConfig.selectedPlugins must be an array');
         details.serverConfigFields.selectedPlugins = 'invalid type';
@@ -214,7 +237,13 @@ app.post('/create-checkout-session', async (req, res) => {
           planId: planId || 'missing',
           billingCycle: billingCycle || 'missing',
           finalPrice: finalPrice || 'missing',
-          serverConfigKeys: serverConfig ? Object.keys(serverConfig) : 'missing'
+          serverConfigKeys: serverConfig ? Object.keys(serverConfig) : 'missing',
+          serverConfigSample: serverConfig ? {
+            serverName: serverConfig.serverName,
+            selectedServerType: serverConfig.selectedServerType,
+            totalCost: serverConfig.totalCost,
+            totalRam: serverConfig.totalRam
+          } : 'missing'
         },
         timestamp: new Date().toISOString()
       });
@@ -698,6 +727,7 @@ app.listen(PORT, () => {
   console.log('  POST /create-checkout-session - Main payment endpoint');
   console.log('  GET  /session-details/:id - Session details');
   console.log('  POST /webhook - Stripe webhooks');
+  console.log('  GET  /deployment-status/:sessionId - Check deployment status');
   console.log('================================');
 });
 
