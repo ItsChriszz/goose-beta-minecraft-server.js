@@ -61,6 +61,50 @@ class PaymentHandler {
     };
   }
 
+  // ADDED: Simple validation for server configuration
+  validateServerConfig(serverConfig) {
+    const errors = [];
+
+    if (!serverConfig) {
+      errors.push('Server configuration is missing');
+      return { isValid: false, errors };
+    }
+
+    // Check required string fields
+    const requiredStringFields = ['serverName', 'planId', 'selectedServerType', 'minecraftVersion'];
+    requiredStringFields.forEach(field => {
+      if (!serverConfig[field] || typeof serverConfig[field] !== 'string' || !serverConfig[field].trim()) {
+        errors.push(`${field} is required and must be a non-empty string`);
+      }
+    });
+
+    // Check required number fields
+    const requiredNumberFields = ['totalCost', 'totalRam', 'maxPlayers', 'viewDistance'];
+    requiredNumberFields.forEach(field => {
+      if (typeof serverConfig[field] !== 'number' || serverConfig[field] <= 0) {
+        errors.push(`${field} is required and must be a positive number`);
+      }
+    });
+
+    // Check boolean fields (optional but should be boolean if present)
+    const booleanFields = ['enableWhitelist', 'enablePvp'];
+    booleanFields.forEach(field => {
+      if (serverConfig[field] !== undefined && typeof serverConfig[field] !== 'boolean') {
+        errors.push(`${field} must be a boolean if provided`);
+      }
+    });
+
+    // Check array fields (optional but should be array if present)
+    if (serverConfig.selectedPlugins !== undefined && !Array.isArray(serverConfig.selectedPlugins)) {
+      errors.push('selectedPlugins must be an array if provided');
+    }
+
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
+  }
+
   // Create Stripe checkout session
   async createCheckoutSession(requestData) {
     const { 
@@ -74,7 +118,7 @@ class PaymentHandler {
       planId,
       billingCycle,
       finalPrice,
-      serverName: serverConfig.serverName
+      serverName: serverConfig?.serverName
     });
 
     // Validate required fields
@@ -87,12 +131,19 @@ class PaymentHandler {
       throw new Error('Invalid billing cycle. Must be monthly, quarterly, semiannual, or annual');
     }
 
+    // Validate server configuration
+    const validation = this.validateServerConfig(serverConfig);
+    if (!validation.isValid) {
+      throw new Error(`Configuration errors: ${validation.errors.join(', ')}`);
+    }
+
     const cycle = this.getBillingCycle(billingCycle);
 
     // Server-side price validation (important for security)
     const serverCalculatedPrice = this.calculatePricing(serverConfig.totalCost, billingCycle);
     const priceDifference = Math.abs(serverCalculatedPrice.finalPrice - finalPrice);
     
+    let validatedFinalPrice = finalPrice;
     if (priceDifference > 0.01) { // Allow 1 cent difference for rounding
       console.warn('⚠️  Price mismatch detected:', {
         frontend: finalPrice,
@@ -100,13 +151,13 @@ class PaymentHandler {
         difference: priceDifference
       });
       // Use server-calculated price for security
-      finalPrice = serverCalculatedPrice.finalPrice;
+      validatedFinalPrice = serverCalculatedPrice.finalPrice;
     }
 
     // Create price object for Stripe
     const priceData = {
       currency: 'usd',
-      unit_amount: Math.round(finalPrice * 100), // Convert to cents
+      unit_amount: Math.round(validatedFinalPrice * 100), // Convert to cents
       recurring: {
         interval: cycle.interval,
         interval_count: cycle.interval_count,
@@ -126,7 +177,7 @@ class PaymentHandler {
     console.log('💰 Price data for Stripe:', priceData);
 
     // Create comprehensive metadata for the checkout session
-    const sessionMetadata = this.createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice);
+    const sessionMetadata = this.createSessionMetadata(serverConfig, billingCycle, cycle, validatedFinalPrice);
 
     console.log('📋 Session metadata:', sessionMetadata);
 
@@ -146,7 +197,7 @@ class PaymentHandler {
       subscription_data: {
         metadata: sessionMetadata
       },
-      customer_email: serverConfig.customerEmail,
+      customer_email: serverConfig.customerEmail || undefined,
       allow_promotion_codes: true,
       billing_address_collection: 'auto',
       automatic_tax: { enabled: false }
@@ -154,7 +205,7 @@ class PaymentHandler {
 
     console.log('✅ Stripe session created:', session.id);
     console.log('💳 Session URL:', session.url);
-    console.log('💰 Total amount:', (finalPrice * 100), 'cents');
+    console.log('💰 Total amount:', (validatedFinalPrice * 100), 'cents');
     console.log('📅 Billing:', `${cycle.interval_count} ${cycle.interval}(s)`);
 
     return {
@@ -177,7 +228,7 @@ class PaymentHandler {
       
       // Server configuration
       serverName: serverConfig.serverName,
-      serverType: serverConfig.selectedServerType || 'paper',
+      selectedServerType: serverConfig.selectedServerType || 'paper', // FIXED: Use selectedServerType
       minecraftVersion: serverConfig.minecraftVersion || 'latest',
       totalRam: serverConfig.totalRam?.toString() || '4',
       maxPlayers: serverConfig.maxPlayers?.toString() || '20',
