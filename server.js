@@ -515,8 +515,9 @@ app.post('/create-checkout-session', async (req, res) => {
 
 const session = await stripe.checkout.sessions.create({
   payment_method_types: ['card'],
-  customer_creation: 'always', // Always create a customer
-  ui_mode: 'hosted', // ✅ REQUIRED to get session.url in subscription mode
+  customer_creation: 'always',
+  ui_mode: 'hosted', // ✅ Required to ensure session.url is included
+  billing_address_collection: 'auto', // ✅ Helps prevent missing session.url for subscriptions
   line_items: [{
     price_data: {
       currency: 'usd',
@@ -524,7 +525,7 @@ const session = await stripe.checkout.sessions.create({
         name: `Minecraft Server - ${serverConfig.serverName}`,
         description: `${serverConfig.serverType.toUpperCase()} server running Minecraft ${serverConfig.minecraftVersion}`
       },
-      unit_amount: Math.round(serverConfig.totalCost * 100), // Convert to cents
+      unit_amount: Math.round(serverConfig.totalCost * 100),
       recurring: { interval: 'month' }
     },
     quantity: 1,
@@ -536,8 +537,10 @@ const session = await stripe.checkout.sessions.create({
 });
 
 
+
     console.log('✅ Checkout session created:', session.id);
     console.log('🔗 Checkout URL:', session.url);
+    console.log('✅ Session created:', session.id);
     console.log('📋 Metadata sent to Stripe:', metadata);
 
     // Return both sessionId and the direct Stripe checkout URL
