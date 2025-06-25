@@ -1,4 +1,4 @@
-// server.js - Complete Fixed Backend for GoosePanel
+// server.js - Complete Minimal Backend with Detailed Debugging
 const express = require('express');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
@@ -15,6 +15,7 @@ app.use(cors({
     'http://localhost:5173',
     'https://goosehosting.com',
     'https://www.goosehosting.com',
+    'https://beta.goosehosting.com',
     process.env.FRONTEND_URL
   ].filter(Boolean),
   credentials: true,
@@ -29,9 +30,6 @@ app.use(express.urlencoded({ extended: true }));
 // Request logging middleware
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-  if (req.method === 'POST' && req.path.includes('checkout')) {
-    console.log('📋 Request body keys:', Object.keys(req.body));
-  }
   next();
 });
 
@@ -65,8 +63,6 @@ function generateRandomPassword(length = 16) {
 
 // Fetch Pterodactyl metadata
 async function fetchPterodactylMeta(customerEmail) {
-  // This would typically fetch from your Pterodactyl panel
-  // For now, returning mock data
   return {
     userId: 1,
     nodeId: 1,
@@ -81,127 +77,154 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    stripe: process.env.STRIPE_SECRET_KEY ? 'configured' : 'missing',
+    webhook: process.env.STRIPE_WEBHOOK_SECRET ? 'configured' : 'missing'
   });
 });
 
-// Test endpoint for debugging
-app.post('/test-server-config', (req, res) => {
-  console.log('🧪 Test endpoint - received data:', {
-    body: req.body,
-    headers: req.headers,
-    contentType: req.get('Content-Type')
-  });
+// Debug endpoint
+app.post('/debug-request', (req, res) => {
+  console.log('🧪 DEBUG ENDPOINT HIT');
+  console.log('🧪 Headers:', req.headers);
+  console.log('🧪 Body:', req.body);
+  console.log('🧪 Body type:', typeof req.body);
+  console.log('🧪 Body keys:', req.body ? Object.keys(req.body) : 'null');
   
   res.json({
+    message: 'Debug endpoint working',
     received: req.body,
-    message: 'Data received successfully',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    bodyType: typeof req.body,
+    bodyKeys: req.body ? Object.keys(req.body) : null
   });
 });
 
-// MAIN ENDPOINT: Create Checkout Session
+// MAIN ENDPOINT: Create Checkout Session with Detailed Debugging
 app.post('/create-checkout-session', async (req, res) => {
+  console.log('🦆 === CHECKOUT SESSION REQUEST ===');
+  console.log('🦆 Request received at:', new Date().toISOString());
+  console.log('🦆 Request method:', req.method);
+  console.log('🦆 Request headers:', req.headers);
+  console.log('🦆 Request body (raw):', JSON.stringify(req.body, null, 2));
+  console.log('🦆 Request body type:', typeof req.body);
+  console.log('🦆 ================================');
+
   try {
-    const { 
-      planId, 
-      billingCycle, 
-      finalPrice, 
-      serverConfig 
-    } = req.body;
+    // Log each field individually
+    const { planId, billingCycle, finalPrice, serverConfig } = req.body;
+    
+    console.log('📋 Extracted fields:');
+    console.log('  planId:', planId, '(type:', typeof planId, ')');
+    console.log('  billingCycle:', billingCycle, '(type:', typeof billingCycle, ')');
+    console.log('  finalPrice:', finalPrice, '(type:', typeof finalPrice, ')');
+    console.log('  serverConfig:', serverConfig, '(type:', typeof serverConfig, ')');
+    
+    if (serverConfig) {
+      console.log('📋 ServerConfig fields:');
+      Object.keys(serverConfig).forEach(key => {
+        console.log(`  ${key}:`, serverConfig[key], '(type:', typeof serverConfig[key], ')');
+      });
+    }
 
-    console.log('🦆 Backend - Creating checkout session with data:', {
-      planId,
-      billingCycle,
-      finalPrice,
-      serverConfigKeys: serverConfig ? Object.keys(serverConfig) : 'null'
-    });
+    // Build detailed error response
+    const errors = [];
+    const details = {};
 
-    // Enhanced validation with detailed error messages
-    const validationErrors = [];
-
-    // Check main fields
     if (!planId) {
-      validationErrors.push('planId is required');
-      console.log('❌ Missing planId');
-    }
-    
-    if (!billingCycle) {
-      validationErrors.push('billingCycle is required');
-      console.log('❌ Missing billingCycle');
-    }
-    
-    if (!finalPrice || finalPrice <= 0) {
-      validationErrors.push('finalPrice must be a positive number');
-      console.log('❌ Invalid finalPrice:', finalPrice);
-    }
-    
-    // Check serverConfig object
-    if (!serverConfig) {
-      validationErrors.push('serverConfig is required');
-      console.log('❌ Missing serverConfig object');
+      errors.push('planId is missing');
+      details.planId = 'missing';
     } else {
-      console.log('📋 ServerConfig received:', JSON.stringify(serverConfig, null, 2));
+      details.planId = 'present';
+    }
+
+    if (!billingCycle) {
+      errors.push('billingCycle is missing');
+      details.billingCycle = 'missing';
+    } else {
+      details.billingCycle = 'present';
+    }
+
+    if (!finalPrice || finalPrice <= 0) {
+      errors.push('finalPrice is missing or invalid');
+      details.finalPrice = 'missing or invalid';
+    } else {
+      details.finalPrice = 'present';
+    }
+
+    if (!serverConfig) {
+      errors.push('serverConfig is missing');
+      details.serverConfig = 'missing';
+    } else {
+      details.serverConfig = 'present';
       
       // Check serverConfig fields
-      if (!serverConfig.serverName || !serverConfig.serverName.trim()) {
-        validationErrors.push('serverConfig.serverName is required');
-        console.log('❌ Invalid serverName:', serverConfig.serverName);
-      }
+      const requiredFields = [
+        'serverName', 'planId', 'selectedServerType', 
+        'minecraftVersion', 'totalCost', 'totalRam', 
+        'maxPlayers', 'viewDistance'
+      ];
       
-      if (!serverConfig.planId) {
-        validationErrors.push('serverConfig.planId is required');
-        console.log('❌ Missing serverConfig.planId');
+      details.serverConfigFields = {};
+      requiredFields.forEach(field => {
+        const value = serverConfig[field];
+        if (value === undefined || value === null || value === '') {
+          errors.push(`serverConfig.${field} is missing`);
+          details.serverConfigFields[field] = 'missing';
+        } else {
+          details.serverConfigFields[field] = 'present';
+        }
+      });
+
+      // Check boolean fields
+      if (serverConfig.enableWhitelist === undefined) {
+        errors.push('serverConfig.enableWhitelist is missing');
+        details.serverConfigFields.enableWhitelist = 'missing';
+      } else {
+        details.serverConfigFields.enableWhitelist = 'present';
       }
-      
-      if (!serverConfig.selectedServerType) {
-        validationErrors.push('serverConfig.selectedServerType is required');
-        console.log('❌ Missing selectedServerType');
+
+      if (serverConfig.enablePvp === undefined) {
+        errors.push('serverConfig.enablePvp is missing');
+        details.serverConfigFields.enablePvp = 'missing';
+      } else {
+        details.serverConfigFields.enablePvp = 'present';
       }
-      
-      if (!serverConfig.minecraftVersion) {
-        validationErrors.push('serverConfig.minecraftVersion is required');
-        console.log('❌ Missing minecraftVersion');
-      }
-      
-      if (!serverConfig.totalCost || serverConfig.totalCost <= 0) {
-        validationErrors.push('serverConfig.totalCost must be a positive number');
-        console.log('❌ Invalid totalCost:', serverConfig.totalCost);
-      }
-      
-      // Check numeric fields with type conversion
-      const totalRam = Number(serverConfig.totalRam);
-      if (isNaN(totalRam) || totalRam <= 0) {
-        validationErrors.push('serverConfig.totalRam must be a positive number');
-        console.log('❌ Invalid totalRam:', serverConfig.totalRam, typeof serverConfig.totalRam);
-      }
-      
-      const maxPlayers = Number(serverConfig.maxPlayers);
-      if (isNaN(maxPlayers) || maxPlayers <= 0) {
-        validationErrors.push('serverConfig.maxPlayers must be a positive number');
-        console.log('❌ Invalid maxPlayers:', serverConfig.maxPlayers, typeof serverConfig.maxPlayers);
-      }
-      
-      const viewDistance = Number(serverConfig.viewDistance);
-      if (isNaN(viewDistance) || viewDistance <= 0) {
-        validationErrors.push('serverConfig.viewDistance must be a positive number');
-        console.log('❌ Invalid viewDistance:', serverConfig.viewDistance, typeof serverConfig.viewDistance);
+
+      // Check array fields
+      if (!Array.isArray(serverConfig.selectedPlugins)) {
+        errors.push('serverConfig.selectedPlugins must be an array');
+        details.serverConfigFields.selectedPlugins = 'invalid type';
+      } else {
+        details.serverConfigFields.selectedPlugins = 'present';
       }
     }
 
-    // If there are validation errors, return them
-    if (validationErrors.length > 0) {
-      console.error('❌ Validation failed:', validationErrors);
+    console.log('🔍 Validation results:');
+    console.log('  Errors:', errors);
+    console.log('  Details:', details);
+
+    if (errors.length > 0) {
+      console.log('❌ Validation failed with errors:', errors);
       return res.status(400).json({
         error: 'Missing required server configuration',
-        details: validationErrors,
+        errors: errors,
+        details: details,
         received: {
           planId: planId || 'missing',
           billingCycle: billingCycle || 'missing',
           finalPrice: finalPrice || 'missing',
-          serverConfigKeys: serverConfig ? Object.keys(serverConfig) : 'serverConfig is null/undefined'
-        }
+          serverConfigKeys: serverConfig ? Object.keys(serverConfig) : 'missing'
+        },
+        timestamp: new Date().toISOString()
       });
+    }
+
+    console.log('✅ All validation passed!');
+
+    // Check if Stripe is configured
+    if (!process.env.STRIPE_SECRET_KEY) {
+      throw new Error('Stripe not configured. Please set STRIPE_SECRET_KEY environment variable.');
     }
 
     // Define billing cycle mapping for Stripe
@@ -239,25 +262,32 @@ app.post('/create-checkout-session', async (req, res) => {
       });
     }
 
-    // Server-side price validation (important for security)
+    console.log('💰 Using billing cycle:', cycle);
+
+    // Server-side price validation
     const serverCalculatedPrice = calculatePricing(serverConfig.totalCost, billingCycle, cycle);
     const priceDifference = Math.abs(serverCalculatedPrice.finalPrice - finalPrice);
     
     let validatedFinalPrice = finalPrice;
-    if (priceDifference > 0.01) { // Allow 1 cent difference for rounding
+    if (priceDifference > 0.01) {
       console.warn('⚠️  Price mismatch detected:', {
         frontend: finalPrice,
         backend: serverCalculatedPrice.finalPrice,
         difference: priceDifference
       });
-      // Use server-calculated price for security
       validatedFinalPrice = serverCalculatedPrice.finalPrice;
     }
+
+    console.log('💰 Final price validation:', {
+      original: finalPrice,
+      validated: validatedFinalPrice,
+      difference: priceDifference
+    });
 
     // Create price object for Stripe
     const priceData = {
       currency: 'usd',
-      unit_amount: Math.round(validatedFinalPrice * 100), // Convert to cents
+      unit_amount: Math.round(validatedFinalPrice * 100),
       recurring: {
         interval: cycle.interval,
         interval_count: cycle.interval_count,
@@ -281,11 +311,6 @@ app.post('/create-checkout-session', async (req, res) => {
 
     console.log('📋 Session metadata:', sessionMetadata);
 
-    // Check if Stripe is configured
-    if (!process.env.STRIPE_SECRET_KEY) {
-      throw new Error('Stripe not configured. Please set STRIPE_SECRET_KEY environment variable.');
-    }
-
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -308,7 +333,8 @@ app.post('/create-checkout-session', async (req, res) => {
       automatic_tax: { enabled: false }
     });
 
-    console.log('✅ Stripe session created:', session.id);
+    console.log('✅ Stripe session created successfully!');
+    console.log('💳 Session ID:', session.id);
     console.log('💳 Session URL:', session.url);
     console.log('💰 Total amount:', (validatedFinalPrice * 100), 'cents');
     console.log('📅 Billing:', `${cycle.interval_count} ${cycle.interval}(s)`);
@@ -321,9 +347,11 @@ app.post('/create-checkout-session', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error creating checkout session:', error);
+    console.error('❌ Error stack:', error.stack);
     res.status(500).json({
       error: error.message || 'Failed to create checkout session',
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -388,7 +416,6 @@ app.get('/session-details/:sessionId', async (req, res) => {
       metadata: session.metadata
     });
 
-    // Return session details with metadata
     res.json({
       id: session.id,
       status: session.payment_status,
@@ -454,19 +481,16 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       case 'invoice.payment_succeeded':
         const invoice = event.data.object;
         console.log('💰 Recurring payment succeeded:', invoice.id);
-        // Handle recurring payments here
         break;
 
       case 'invoice.payment_failed':
         const failedInvoice = event.data.object;
         console.log('❌ Payment failed:', failedInvoice.id);
-        // Handle failed payments (maybe suspend server)
         break;
 
       case 'customer.subscription.deleted':
         const subscription = event.data.object;
         console.log('🚫 Subscription cancelled:', subscription.id);
-        // Handle subscription cancellation (suspend/delete server)
         break;
 
       default:
@@ -487,7 +511,6 @@ async function createPterodactylServer(session) {
     console.log('==========================================');
     console.log('📋 Session Metadata:', session.metadata);
 
-    // Get customer email from Stripe session
     const customerEmail = session.customer_details?.email || session.customer_email || 'admin@goosehosting.com';
     console.log('📧 Customer Email:', customerEmail);
 
@@ -507,7 +530,7 @@ async function createPterodactylServer(session) {
     console.log('  • Billing Period:', billingMultiplier + ' month(s)');
     console.log('  • Discount Applied:', Math.round(billingDiscount * 100) + '%');
     
-    // Extract server configuration (all are strings from Stripe metadata)
+    // Extract server configuration
     const serverName = session.metadata.serverName || `GooseServer-${Date.now()}`;
     const serverType = session.metadata.selectedServerType || 'paper';
     const minecraftVersion = session.metadata.minecraftVersion || 'latest';
@@ -652,7 +675,8 @@ app.use((req, res) => {
   res.status(404).json({
     error: 'Not found',
     path: req.path,
-    method: req.method
+    method: req.method,
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -666,6 +690,14 @@ app.listen(PORT, () => {
   console.log(`💳 Stripe configured: ${process.env.STRIPE_SECRET_KEY ? '✅ Yes' : '❌ No'}`);
   console.log(`🪝 Webhook configured: ${process.env.STRIPE_WEBHOOK_SECRET ? '✅ Yes' : '❌ No'}`);
   console.log(`🦆 Pterodactyl configured: ${PTERODACTYL_API_KEY ? '✅ Yes' : '❌ No'}`);
+  console.log('================================');
+  console.log('🔍 Debug mode enabled - detailed logging active');
+  console.log('📊 Available endpoints:');
+  console.log('  GET  /health - Health check');
+  console.log('  POST /debug-request - Debug endpoint');
+  console.log('  POST /create-checkout-session - Main payment endpoint');
+  console.log('  GET  /session-details/:id - Session details');
+  console.log('  POST /webhook - Stripe webhooks');
   console.log('================================');
 });
 
