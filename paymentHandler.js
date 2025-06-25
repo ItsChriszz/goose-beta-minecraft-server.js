@@ -216,7 +216,8 @@ class PaymentHandler {
   }
 
   // Create session metadata
-  createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice) {
+  createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice, planId) {
+    
     return {
       // Plan and billing info
       planId: planId,
