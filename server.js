@@ -1,4 +1,4 @@
-// server.js - Complete Fixed Backend with Enhanced Validation
+// server.js - Complete Backend with Simplified Validation
 const express = require('express');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
@@ -72,6 +72,49 @@ async function fetchPterodactylMeta(customerEmail) {
   };
 }
 
+// Helper function to calculate pricing
+function calculatePricing(monthlyPrice, billingCycle, cycle) {
+  const totalBeforeDiscount = monthlyPrice * cycle.multiplier;
+  const discountAmount = totalBeforeDiscount * cycle.discount;
+  const finalPrice = totalBeforeDiscount - discountAmount;
+
+  return {
+    monthlyPrice,
+    totalBeforeDiscount,
+    discountAmount,
+    finalPrice,
+    cycle
+  };
+}
+
+// Helper function to create session metadata
+function createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice) {
+  return {
+    // Plan and billing info
+    planId: serverConfig.planId,
+    billingCycle: billingCycle,
+    finalPrice: finalPrice.toString(),
+    monthlyRate: serverConfig.totalCost.toString(),
+    billingMultiplier: cycle.multiplier.toString(),
+    billingDiscount: cycle.discount.toString(),
+    
+    // Server configuration
+    serverName: serverConfig.serverName,
+    selectedServerType: serverConfig.selectedServerType || 'paper',
+    minecraftVersion: serverConfig.minecraftVersion || 'latest',
+    totalRam: serverConfig.totalRam?.toString() || '4',
+    maxPlayers: serverConfig.maxPlayers?.toString() || '20',
+    viewDistance: serverConfig.viewDistance?.toString() || '10',
+    enableWhitelist: serverConfig.enableWhitelist?.toString() || 'false',
+    enablePvp: serverConfig.enablePvp?.toString() || 'true',
+    selectedPlugins: Array.isArray(serverConfig.selectedPlugins) ? serverConfig.selectedPlugins.join(',') : '',
+    
+    // Status tracking
+    serverStatus: 'pending',
+    createdAt: new Date().toISOString()
+  };
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
@@ -100,18 +143,67 @@ app.post('/debug-request', (req, res) => {
   });
 });
 
-// MAIN ENDPOINT: Create Checkout Session with Enhanced Validation
+// Debug checkout endpoint
+app.post('/debug-checkout', (req, res) => {
+  console.log('🐛 DEBUG CHECKOUT ENDPOINT');
+  console.log('🐛 Request body:', JSON.stringify(req.body, null, 2));
+  
+  const { planId, billingCycle, finalPrice, serverConfig } = req.body;
+  
+  const validation = {
+    planId: {
+      value: planId,
+      type: typeof planId,
+      valid: !!(planId && typeof planId === 'string')
+    },
+    billingCycle: {
+      value: billingCycle,
+      type: typeof billingCycle,
+      valid: !!(billingCycle && typeof billingCycle === 'string')
+    },
+    finalPrice: {
+      value: finalPrice,
+      type: typeof finalPrice,
+      valid: !!(finalPrice && typeof finalPrice === 'number' && finalPrice > 0)
+    },
+    serverConfig: {
+      exists: !!serverConfig,
+      type: typeof serverConfig,
+      keys: serverConfig ? Object.keys(serverConfig) : null,
+      fields: serverConfig ? {
+        serverName: {
+          value: serverConfig.serverName,
+          type: typeof serverConfig.serverName,
+          valid: !!(serverConfig.serverName && typeof serverConfig.serverName === 'string' && serverConfig.serverName.trim())
+        },
+        selectedServerType: {
+          value: serverConfig.selectedServerType,
+          type: typeof serverConfig.selectedServerType,
+          valid: !!(serverConfig.selectedServerType && typeof serverConfig.selectedServerType === 'string')
+        },
+        totalCost: {
+          value: serverConfig.totalCost,
+          type: typeof serverConfig.totalCost,
+          valid: !!(typeof serverConfig.totalCost === 'number' && serverConfig.totalCost > 0)
+        }
+      } : null
+    }
+  };
+  
+  res.json({
+    message: 'Debug endpoint working',
+    validation,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// MAIN ENDPOINT: Create Checkout Session with SIMPLIFIED Validation
 app.post('/create-checkout-session', async (req, res) => {
   console.log('🦆 === CHECKOUT SESSION REQUEST ===');
   console.log('🦆 Request received at:', new Date().toISOString());
-  console.log('🦆 Request method:', req.method);
-  console.log('🦆 Request headers:', req.headers);
-  console.log('🦆 Request body (raw):', JSON.stringify(req.body, null, 2));
-  console.log('🦆 Request body type:', typeof req.body);
-  console.log('🦆 ================================');
+  console.log('🦆 Request body:', JSON.stringify(req.body, null, 2));
 
   try {
-    // Log each field individually
     const { planId, billingCycle, finalPrice, serverConfig } = req.body;
     
     console.log('📋 Extracted fields:');
@@ -119,137 +211,59 @@ app.post('/create-checkout-session', async (req, res) => {
     console.log('  billingCycle:', billingCycle, '(type:', typeof billingCycle, ')');
     console.log('  finalPrice:', finalPrice, '(type:', typeof finalPrice, ')');
     console.log('  serverConfig:', serverConfig, '(type:', typeof serverConfig, ')');
-    
-    if (serverConfig) {
-      console.log('📋 ServerConfig fields:');
-      Object.keys(serverConfig).forEach(key => {
-        console.log(`  ${key}:`, serverConfig[key], '(type:', typeof serverConfig[key], ')');
-      });
-    }
 
-    // Build detailed error response with enhanced validation
+    // SIMPLIFIED VALIDATION - Just check if essential fields exist
     const errors = [];
-    const details = {};
-
-    // Validate top-level fields
+    
     if (!planId || typeof planId !== 'string') {
-      errors.push('planId must be a non-empty string');
-      details.planId = planId ? 'invalid type' : 'missing';
-    } else {
-      details.planId = 'present';
+      errors.push('planId is missing or invalid');
     }
-
     if (!billingCycle || typeof billingCycle !== 'string') {
-      errors.push('billingCycle must be a non-empty string');
-      details.billingCycle = billingCycle ? 'invalid type' : 'missing';
-    } else {
-      details.billingCycle = 'present';
+      errors.push('billingCycle is missing or invalid');
     }
-
     if (!finalPrice || typeof finalPrice !== 'number' || finalPrice <= 0) {
-      errors.push('finalPrice must be a positive number');
-      details.finalPrice = 'missing or invalid';
-    } else {
-      details.finalPrice = 'present';
+      errors.push('finalPrice is missing or invalid');
     }
-
     if (!serverConfig || typeof serverConfig !== 'object') {
-      errors.push('serverConfig must be an object');
-      details.serverConfig = 'missing or invalid';
+      errors.push('serverConfig is missing or invalid');
     } else {
-      details.serverConfig = 'present';
-      
-      // Enhanced serverConfig validation with better error messages
-      const requiredStringFields = [
-        { field: 'serverName', required: true },
-        { field: 'planId', required: true },
-        { field: 'selectedServerType', required: true },
-        { field: 'minecraftVersion', required: true }
-      ];
-      
-      const requiredNumberFields = [
-        { field: 'totalCost', required: true, min: 0 },
-        { field: 'totalRam', required: true, min: 1 },
-        { field: 'maxPlayers', required: true, min: 1 },
-        { field: 'viewDistance', required: true, min: 1 }
-      ];
-
-      const requiredBooleanFields = [
-        { field: 'enableWhitelist', required: true },
-        { field: 'enablePvp', required: true }
-      ];
-
-      details.serverConfigFields = {};
-
-      // Validate string fields
-      requiredStringFields.forEach(({ field, required }) => {
-        const value = serverConfig[field];
-        if (required && (!value || typeof value !== 'string' || !value.trim())) {
-          errors.push(`serverConfig.${field} must be a non-empty string`);
-          details.serverConfigFields[field] = value ? 'empty or invalid type' : 'missing';
-        } else {
-          details.serverConfigFields[field] = 'present';
-        }
-      });
-
-      // Validate number fields
-      requiredNumberFields.forEach(({ field, required, min }) => {
-        const value = serverConfig[field];
-        if (required && (typeof value !== 'number' || isNaN(value) || value < min)) {
-          errors.push(`serverConfig.${field} must be a number >= ${min}`);
-          details.serverConfigFields[field] = 'missing or invalid';
-        } else {
-          details.serverConfigFields[field] = 'present';
-        }
-      });
-
-      // Validate boolean fields
-      requiredBooleanFields.forEach(({ field, required }) => {
-        const value = serverConfig[field];
-        if (required && typeof value !== 'boolean') {
-          errors.push(`serverConfig.${field} must be a boolean`);
-          details.serverConfigFields[field] = 'missing or invalid type';
-        } else {
-          details.serverConfigFields[field] = 'present';
-        }
-      });
-
-      // Validate array fields
-      if (!Array.isArray(serverConfig.selectedPlugins)) {
-        errors.push('serverConfig.selectedPlugins must be an array');
-        details.serverConfigFields.selectedPlugins = 'invalid type';
-      } else {
-        details.serverConfigFields.selectedPlugins = 'present';
+      // Check essential serverConfig fields
+      if (!serverConfig.serverName || typeof serverConfig.serverName !== 'string' || !serverConfig.serverName.trim()) {
+        errors.push('serverConfig.serverName is missing or invalid');
+      }
+      if (!serverConfig.selectedServerType || typeof serverConfig.selectedServerType !== 'string') {
+        errors.push('serverConfig.selectedServerType is missing or invalid');
+      }
+      if (!serverConfig.minecraftVersion || typeof serverConfig.minecraftVersion !== 'string') {
+        errors.push('serverConfig.minecraftVersion is missing or invalid');
+      }
+      if (typeof serverConfig.totalCost !== 'number' || serverConfig.totalCost <= 0) {
+        errors.push('serverConfig.totalCost is missing or invalid');
       }
     }
 
-    console.log('🔍 Validation results:');
-    console.log('  Errors:', errors);
-    console.log('  Details:', details);
-
     if (errors.length > 0) {
-      console.log('❌ Validation failed with errors:', errors);
+      console.log('❌ Validation failed:', errors);
       return res.status(400).json({
         error: 'Missing required server configuration',
         errors: errors,
-        details: details,
         received: {
           planId: planId || 'missing',
           billingCycle: billingCycle || 'missing',
           finalPrice: finalPrice || 'missing',
-          serverConfigKeys: serverConfig ? Object.keys(serverConfig) : 'missing',
+          serverConfig: serverConfig ? 'present' : 'missing',
           serverConfigSample: serverConfig ? {
-            serverName: serverConfig.serverName,
-            selectedServerType: serverConfig.selectedServerType,
-            totalCost: serverConfig.totalCost,
-            totalRam: serverConfig.totalRam
+            serverName: serverConfig.serverName || 'missing',
+            selectedServerType: serverConfig.selectedServerType || 'missing',
+            minecraftVersion: serverConfig.minecraftVersion || 'missing',
+            totalCost: serverConfig.totalCost || 'missing'
           } : 'missing'
         },
         timestamp: new Date().toISOString()
       });
     }
 
-    console.log('✅ All validation passed!');
+    console.log('✅ Validation passed!');
 
     // Check if Stripe is configured
     if (!process.env.STRIPE_SECRET_KEY) {
@@ -384,49 +398,6 @@ app.post('/create-checkout-session', async (req, res) => {
     });
   }
 });
-
-// Helper function to calculate pricing
-function calculatePricing(monthlyPrice, billingCycle, cycle) {
-  const totalBeforeDiscount = monthlyPrice * cycle.multiplier;
-  const discountAmount = totalBeforeDiscount * cycle.discount;
-  const finalPrice = totalBeforeDiscount - discountAmount;
-
-  return {
-    monthlyPrice,
-    totalBeforeDiscount,
-    discountAmount,
-    finalPrice,
-    cycle
-  };
-}
-
-// Helper function to create session metadata
-function createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice) {
-  return {
-    // Plan and billing info
-    planId: serverConfig.planId,
-    billingCycle: billingCycle,
-    finalPrice: finalPrice.toString(),
-    monthlyRate: serverConfig.totalCost.toString(),
-    billingMultiplier: cycle.multiplier.toString(),
-    billingDiscount: cycle.discount.toString(),
-    
-    // Server configuration
-    serverName: serverConfig.serverName,
-    selectedServerType: serverConfig.selectedServerType || 'paper',
-    minecraftVersion: serverConfig.minecraftVersion || 'latest',
-    totalRam: serverConfig.totalRam?.toString() || '4',
-    maxPlayers: serverConfig.maxPlayers?.toString() || '20',
-    viewDistance: serverConfig.viewDistance?.toString() || '10',
-    enableWhitelist: serverConfig.enableWhitelist?.toString() || 'false',
-    enablePvp: serverConfig.enablePvp?.toString() || 'true',
-    selectedPlugins: Array.isArray(serverConfig.selectedPlugins) ? serverConfig.selectedPlugins.join(',') : '',
-    
-    // Status tracking
-    serverStatus: 'pending',
-    createdAt: new Date().toISOString()
-  };
-}
 
 // Get session details endpoint
 app.get('/session-details/:sessionId', async (req, res) => {
@@ -724,6 +695,7 @@ app.listen(PORT, () => {
   console.log('📊 Available endpoints:');
   console.log('  GET  /health - Health check');
   console.log('  POST /debug-request - Debug endpoint');
+  console.log('  POST /debug-checkout - Debug checkout validation');
   console.log('  POST /create-checkout-session - Main payment endpoint');
   console.log('  GET  /session-details/:id - Session details');
   console.log('  POST /webhook - Stripe webhooks');
