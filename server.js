@@ -109,42 +109,76 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), async (req, r
 });
 
 // Create Checkout Session
+// Update the create-checkout-session endpoint
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { planId, serverConfig } = req.body;
 
-    if (!planId || !serverConfig) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    // Validate input more thoroughly
+    if (!planId || !serverConfig || !serverConfig.serverName || !serverConfig.totalCost) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        details: {
+          requires: ['planId', 'serverConfig with serverName and totalCost']
+        }
+      });
     }
+
+    // Create Stripe Price on the fly if using dynamic pricing
+    const price = await stripe.prices.create({
+      unit_amount: Math.round(serverConfig.totalCost * 100),
+      currency: 'usd',
+      product_data: {
+        name: `Minecraft Server - ${serverConfig.serverName}`,
+        description: `${serverConfig.serverType || 'Vanilla'} ${serverConfig.minecraftVersion || 'Latest'}`
+      },
+      recurring: { interval: 'month' }
+    });
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       mode: 'subscription',
-      ui_mode: 'hosted',
-      customer_email: serverConfig.customerEmail,
       line_items: [{
-        price: planId, // Use Stripe Price ID directly
+        price: price.id,
         quantity: 1,
       }],
       success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/cancel`,
-      metadata: serverConfig
+      metadata: serverConfig,
+      customer_email: serverConfig.customerEmail || 'customer@example.com' // Fallback email
+    });
+
+    console.log('Stripe session created:', {
+      id: session.id,
+      url: session.url,
+      amount: session.amount_total
     });
 
     if (!session.url) {
-      throw new Error('Stripe session URL not generated');
+      throw new Error('Stripe did not return a checkout URL');
     }
 
     res.json({ 
+      success: true,
       sessionId: session.id,
       checkoutUrl: session.url 
     });
 
   } catch (err) {
-    console.error('Checkout session error:', err);
+    console.error('Stripe session creation failed:', {
+      error: err.message,
+      stack: err.stack,
+      type: err.type,
+      raw: err.raw ? err.raw.message : null
+    });
+    
     res.status(500).json({ 
-      error: err.message || 'Failed to create checkout session',
-      details: err.type || null
+      success: false,
+      error: 'Failed to create payment session',
+      details: {
+        message: err.message,
+        type: err.type
+      }
     });
   }
 });
