@@ -87,7 +87,7 @@ function calculatePricing(monthlyPrice, billingCycle, cycle) {
   };
 }
 
-// Helper function to create session metadata
+// FIXED: Helper function to create session metadata
 function createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice, planId) {
   return {
     // Plan and billing info
@@ -176,10 +176,10 @@ app.post('/debug-checkout', (req, res) => {
           type: typeof serverConfig.serverName,
           valid: !!(serverConfig.serverName && typeof serverConfig.serverName === 'string' && serverConfig.serverName.trim())
         },
-        selectedServerType: {
-          value: serverConfig.selectedServerType,
-          type: typeof serverConfig.selectedServerType,
-          valid: !!(serverConfig.selectedServerType && typeof serverConfig.selectedServerType === 'string')
+        serverType: {
+          value: serverConfig.serverType,
+          type: typeof serverConfig.serverType,
+          valid: !!(serverConfig.serverType && typeof serverConfig.serverType === 'string')
         },
         totalCost: {
           value: serverConfig.totalCost,
@@ -217,7 +217,7 @@ app.post('/create-checkout-session', async (req, res) => {
       console.log('📋 ServerConfig contents:');
       console.log('  serverName:', serverConfig.serverName, '(type:', typeof serverConfig.serverName, ')');
       console.log('  planId:', serverConfig.planId, '(type:', typeof serverConfig.planId, ')');
-      console.log('  selectedServerType:', serverConfig.selectedServerType, '(type:', typeof serverConfig.selectedServerType, ')');
+      console.log('  serverType:', serverConfig.serverType, '(type:', typeof serverConfig.serverType, ')');
       console.log('  minecraftVersion:', serverConfig.minecraftVersion, '(type:', typeof serverConfig.minecraftVersion, ')');
       console.log('  totalCost:', serverConfig.totalCost, '(type:', typeof serverConfig.totalCost, ')');
       console.log('  totalRam:', serverConfig.totalRam, '(type:', typeof serverConfig.totalRam, ')');
@@ -232,69 +232,85 @@ app.post('/create-checkout-session', async (req, res) => {
     const errors = [];
 
     // Validate top-level fields
-if (!serverConfig.serverName || typeof serverConfig.serverName !== 'string' || !serverConfig.serverName.trim()) {
-  errors.push('serverConfig.serverName is missing or invalid (must be a non-empty string)');
-  console.log('❌ serverConfig.serverName validation failed:', serverConfig.serverName, typeof serverConfig.serverName);
-}
+    if (!planId || typeof planId !== 'string') {
+      errors.push('planId is missing or invalid (must be a non-empty string)');
+    }
 
-if (!serverConfig.planId || typeof serverConfig.planId !== 'string') {
-  errors.push('serverConfig.planId is missing or invalid (must be a non-empty string)');
-  console.log('❌ serverConfig.planId validation failed:', serverConfig.planId, typeof serverConfig.planId);
-}
+    if (!billingCycle || typeof billingCycle !== 'string') {
+      errors.push('billingCycle is missing or invalid (must be a non-empty string)');
+    }
 
-// FIXED: Change from selectedServerType to serverType
-if (!serverConfig.serverType || typeof serverConfig.serverType !== 'string') {
-  errors.push('serverConfig.serverType is missing or invalid (must be a non-empty string)');
-  console.log('❌ serverConfig.serverType validation failed:', serverConfig.serverType, typeof serverConfig.serverType);
-}
+    if (!finalPrice || typeof finalPrice !== 'number' || finalPrice <= 0) {
+      errors.push('finalPrice is missing or invalid (must be a positive number)');
+    }
 
-if (!serverConfig.minecraftVersion || typeof serverConfig.minecraftVersion !== 'string') {
-  errors.push('serverConfig.minecraftVersion is missing or invalid (must be a non-empty string)');
-  console.log('❌ serverConfig.minecraftVersion validation failed:', serverConfig.minecraftVersion, typeof serverConfig.minecraftVersion);
-}
+    if (!serverConfig || typeof serverConfig !== 'object') {
+      errors.push('serverConfig is missing or invalid (must be an object)');
+    } else {
+      // FIXED: Validate serverConfig fields
+      if (!serverConfig.serverName || typeof serverConfig.serverName !== 'string' || !serverConfig.serverName.trim()) {
+        errors.push('serverConfig.serverName is missing or invalid (must be a non-empty string)');
+        console.log('❌ serverConfig.serverName validation failed:', serverConfig.serverName, typeof serverConfig.serverName);
+      }
 
-// Validate numeric fields with type coercion
-const totalCost = Number(serverConfig.totalCost);
-if (isNaN(totalCost) || totalCost <= 0) {
-  errors.push('serverConfig.totalCost is missing or invalid (must be a positive number)');
-  console.log('❌ serverConfig.totalCost validation failed:', serverConfig.totalCost, typeof serverConfig.totalCost, 'converted:', totalCost);
-}
+      if (!serverConfig.planId || typeof serverConfig.planId !== 'string') {
+        errors.push('serverConfig.planId is missing or invalid (must be a non-empty string)');
+        console.log('❌ serverConfig.planId validation failed:', serverConfig.planId, typeof serverConfig.planId);
+      }
 
-const totalRam = Number(serverConfig.totalRam);
-if (isNaN(totalRam) || totalRam <= 0) {
-  errors.push('serverConfig.totalRam is missing or invalid (must be a positive number)');
-  console.log('❌ serverConfig.totalRam validation failed:', serverConfig.totalRam, typeof serverConfig.totalRam, 'converted:', totalRam);
-}
+      // FIXED: Change from selectedServerType to serverType
+      if (!serverConfig.serverType || typeof serverConfig.serverType !== 'string') {
+        errors.push('serverConfig.serverType is missing or invalid (must be a non-empty string)');
+        console.log('❌ serverConfig.serverType validation failed:', serverConfig.serverType, typeof serverConfig.serverType);
+      }
 
-const maxPlayers = Number(serverConfig.maxPlayers);
-if (isNaN(maxPlayers) || maxPlayers <= 0) {
-  errors.push('serverConfig.maxPlayers is missing or invalid (must be a positive number)');
-  console.log('❌ serverConfig.maxPlayers validation failed:', serverConfig.maxPlayers, typeof serverConfig.maxPlayers, 'converted:', maxPlayers);
-}
+      if (!serverConfig.minecraftVersion || typeof serverConfig.minecraftVersion !== 'string') {
+        errors.push('serverConfig.minecraftVersion is missing or invalid (must be a non-empty string)');
+        console.log('❌ serverConfig.minecraftVersion validation failed:', serverConfig.minecraftVersion, typeof serverConfig.minecraftVersion);
+      }
 
-const viewDistance = Number(serverConfig.viewDistance);
-if (isNaN(viewDistance) || viewDistance <= 0) {
-  errors.push('serverConfig.viewDistance is missing or invalid (must be a positive number)');
-  console.log('❌ serverConfig.viewDistance validation failed:', serverConfig.viewDistance, typeof serverConfig.viewDistance, 'converted:', viewDistance);
-}
+      // Validate numeric fields with type coercion
+      const totalCost = Number(serverConfig.totalCost);
+      if (isNaN(totalCost) || totalCost <= 0) {
+        errors.push('serverConfig.totalCost is missing or invalid (must be a positive number)');
+        console.log('❌ serverConfig.totalCost validation failed:', serverConfig.totalCost, typeof serverConfig.totalCost, 'converted:', totalCost);
+      }
 
-// Validate boolean fields with type checking
-if (typeof serverConfig.enableWhitelist !== 'boolean') {
-  errors.push('serverConfig.enableWhitelist is missing or invalid (must be a boolean)');
-  console.log('❌ serverConfig.enableWhitelist validation failed:', serverConfig.enableWhitelist, typeof serverConfig.enableWhitelist);
-}
+      const totalRam = Number(serverConfig.totalRam);
+      if (isNaN(totalRam) || totalRam <= 0) {
+        errors.push('serverConfig.totalRam is missing or invalid (must be a positive number)');
+        console.log('❌ serverConfig.totalRam validation failed:', serverConfig.totalRam, typeof serverConfig.totalRam, 'converted:', totalRam);
+      }
 
-if (typeof serverConfig.enablePvp !== 'boolean') {
-  errors.push('serverConfig.enablePvp is missing or invalid (must be a boolean)');
-  console.log('❌ serverConfig.enablePvp validation failed:', serverConfig.enablePvp, typeof serverConfig.enablePvp);
-}
+      const maxPlayers = Number(serverConfig.maxPlayers);
+      if (isNaN(maxPlayers) || maxPlayers <= 0) {
+        errors.push('serverConfig.maxPlayers is missing or invalid (must be a positive number)');
+        console.log('❌ serverConfig.maxPlayers validation failed:', serverConfig.maxPlayers, typeof serverConfig.maxPlayers, 'converted:', maxPlayers);
+      }
 
-// Validate array fields
-if (!Array.isArray(serverConfig.selectedPlugins)) {
-  errors.push('serverConfig.selectedPlugins is missing or invalid (must be an array)');
-  console.log('❌ serverConfig.selectedPlugins validation failed:', serverConfig.selectedPlugins, typeof serverConfig.selectedPlugins);
-}
+      const viewDistance = Number(serverConfig.viewDistance);
+      if (isNaN(viewDistance) || viewDistance <= 0) {
+        errors.push('serverConfig.viewDistance is missing or invalid (must be a positive number)');
+        console.log('❌ serverConfig.viewDistance validation failed:', serverConfig.viewDistance, typeof serverConfig.viewDistance, 'converted:', viewDistance);
+      }
 
+      // Validate boolean fields with type checking
+      if (typeof serverConfig.enableWhitelist !== 'boolean') {
+        errors.push('serverConfig.enableWhitelist is missing or invalid (must be a boolean)');
+        console.log('❌ serverConfig.enableWhitelist validation failed:', serverConfig.enableWhitelist, typeof serverConfig.enableWhitelist);
+      }
+
+      if (typeof serverConfig.enablePvp !== 'boolean') {
+        errors.push('serverConfig.enablePvp is missing or invalid (must be a boolean)');
+        console.log('❌ serverConfig.enablePvp validation failed:', serverConfig.enablePvp, typeof serverConfig.enablePvp);
+      }
+
+      // Validate array fields
+      if (!Array.isArray(serverConfig.selectedPlugins)) {
+        errors.push('serverConfig.selectedPlugins is missing or invalid (must be an array)');
+        console.log('❌ serverConfig.selectedPlugins validation failed:', serverConfig.selectedPlugins, typeof serverConfig.selectedPlugins);
+      }
+    }
 
     if (errors.length > 0) {
       console.log('❌ Validation failed with errors:', errors);
@@ -310,7 +326,7 @@ if (!Array.isArray(serverConfig.selectedPlugins)) {
           serverConfig: serverConfig ? {
             serverName: serverConfig.serverName ?? 'missing',
             planId: serverConfig.planId ?? 'missing',
-            selectedServerType: serverConfig.selectedServerType ?? 'missing',
+            serverType: serverConfig.serverType ?? 'missing',
             minecraftVersion: serverConfig.minecraftVersion ?? 'missing',
             totalCost: serverConfig.totalCost ?? 'missing',
             totalRam: serverConfig.totalRam ?? 'missing',
@@ -395,7 +411,7 @@ if (!Array.isArray(serverConfig.selectedPlugins)) {
       difference: priceDifference
     });
 
-    // Create price object for Stripe
+    // FIXED: Create price object for Stripe
     const priceData = {
       currency: 'usd',
       unit_amount: Math.round(validatedFinalPrice * 100),
@@ -404,12 +420,12 @@ if (!Array.isArray(serverConfig.selectedPlugins)) {
         interval_count: cycle.interval_count,
       },
       product_data: {
-        name: `${serverConfig.serverName} - ${serverConfig.planId.charAt(0).toUpperCase() + serverConfig.planId.slice(1)} Plan`,
+        name: `${serverConfig.serverName} - ${planId.charAt(0).toUpperCase() + planId.slice(1)} Plan`,
         description: `Minecraft server hosting - ${billingCycle} billing (${cycle.multiplier} month${cycle.multiplier > 1 ? 's' : ''})`,
         metadata: {
-          plan: serverConfig.planId,
+          plan: planId,
           billingCycle: billingCycle,
-          serverType: serverConfig.selectedServerType || 'paper',
+          serverType: serverConfig.serverType || 'paper', // ← FIXED: Use serverType
           minecraftVersion: serverConfig.minecraftVersion || 'latest'
         }
       }
@@ -418,7 +434,7 @@ if (!Array.isArray(serverConfig.selectedPlugins)) {
     console.log('💰 Price data for Stripe:', priceData);
 
     // Create comprehensive metadata for the checkout session
-    const sessionMetadata = createSessionMetadata(serverConfig, billingCycle, cycle, validatedFinalPrice);
+    const sessionMetadata = createSessionMetadata(serverConfig, billingCycle, cycle, validatedFinalPrice, planId);
 
     console.log('📋 Session metadata:', sessionMetadata);
 
@@ -572,7 +588,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
   res.json({ received: true });
 });
 
-// Create Pterodactyl server function
+// FIXED: Create Pterodactyl server function
 async function createPterodactylServer(session) {
   try {
     console.log('🦆 GOOSE HOSTING - PTERODACTYL DEPLOYMENT');
@@ -593,14 +609,14 @@ async function createPterodactylServer(session) {
     
     console.log('💰 Billing Information:');
     console.log('  • Cycle:', billingCycle);
-    console.log('  • Total Paid:', ' + finalPrice.toFixed(2));
-    console.log('  • Monthly Rate:', ' + monthlyRate.toFixed(2));
+    console.log('  • Total Paid:', '$' + finalPrice.toFixed(2));
+    console.log('  • Monthly Rate:', '$' + monthlyRate.toFixed(2));
     console.log('  • Billing Period:', billingMultiplier + ' month(s)');
     console.log('  • Discount Applied:', Math.round(billingDiscount * 100) + '%');
     
-    // Extract server configuration
+    // FIXED: Extract server configuration - Use serverType instead of selectedServerType
     const serverName = session.metadata.serverName || `GooseServer-${Date.now()}`;
-    const serverType = session.metadata.selectedServerType || 'paper';
+    const serverType = session.metadata.serverType || 'paper'; // ← FIXED: Changed from selectedServerType
     const minecraftVersion = session.metadata.minecraftVersion || 'latest';
     const planId = session.metadata.planId || 'pro';
     const maxPlayers = parseInt(session.metadata.maxPlayers) || 20;
@@ -612,7 +628,7 @@ async function createPterodactylServer(session) {
 
     console.log('🎮 Server Configuration:');
     console.log('  • Server Name:', serverName);
-    console.log('  • Server Type:', serverType);
+    console.log('  • Server Type:', serverType); // Now this will show the correct value
     console.log('  • Minecraft Version:', minecraftVersion);
     console.log('  • Plan:', planId);
     console.log('  • Max Players:', maxPlayers);
@@ -676,6 +692,7 @@ async function createPterodactylServer(session) {
       serverUuid,
       serverName,
       serverAddress,
+      serverType: serverType, // This will now work correctly
       credentials,
       billingInfo: {
         cycle: billingCycle,
