@@ -232,88 +232,69 @@ app.post('/create-checkout-session', async (req, res) => {
     const errors = [];
 
     // Validate top-level fields
-    if (!planId || typeof planId !== 'string') {
-      errors.push('planId is missing or invalid (must be a non-empty string)');
-      console.log('❌ planId validation failed:', planId, typeof planId);
-    }
+if (!serverConfig.serverName || typeof serverConfig.serverName !== 'string' || !serverConfig.serverName.trim()) {
+  errors.push('serverConfig.serverName is missing or invalid (must be a non-empty string)');
+  console.log('❌ serverConfig.serverName validation failed:', serverConfig.serverName, typeof serverConfig.serverName);
+}
 
-    if (!billingCycle || typeof billingCycle !== 'string') {
-      errors.push('billingCycle is missing or invalid (must be a non-empty string)');
-      console.log('❌ billingCycle validation failed:', billingCycle, typeof billingCycle);
-    }
+if (!serverConfig.planId || typeof serverConfig.planId !== 'string') {
+  errors.push('serverConfig.planId is missing or invalid (must be a non-empty string)');
+  console.log('❌ serverConfig.planId validation failed:', serverConfig.planId, typeof serverConfig.planId);
+}
 
-    if (!finalPrice || typeof finalPrice !== 'number' || finalPrice <= 0) {
-      errors.push('finalPrice is missing or invalid (must be a positive number)');
-      console.log('❌ finalPrice validation failed:', finalPrice, typeof finalPrice);
-    }
+// FIXED: Change from selectedServerType to serverType
+if (!serverConfig.serverType || typeof serverConfig.serverType !== 'string') {
+  errors.push('serverConfig.serverType is missing or invalid (must be a non-empty string)');
+  console.log('❌ serverConfig.serverType validation failed:', serverConfig.serverType, typeof serverConfig.serverType);
+}
 
-    if (!serverConfig || typeof serverConfig !== 'object') {
-      errors.push('serverConfig is missing or invalid (must be an object)');
-      console.log('❌ serverConfig validation failed:', serverConfig, typeof serverConfig);
-    } else {
-      // Validate serverConfig fields
-      if (!serverConfig.serverName || typeof serverConfig.serverName !== 'string' || !serverConfig.serverName.trim()) {
-        errors.push('serverConfig.serverName is missing or invalid (must be a non-empty string)');
-        console.log('❌ serverConfig.serverName validation failed:', serverConfig.serverName, typeof serverConfig.serverName);
-      }
+if (!serverConfig.minecraftVersion || typeof serverConfig.minecraftVersion !== 'string') {
+  errors.push('serverConfig.minecraftVersion is missing or invalid (must be a non-empty string)');
+  console.log('❌ serverConfig.minecraftVersion validation failed:', serverConfig.minecraftVersion, typeof serverConfig.minecraftVersion);
+}
 
-      if (!serverConfig.planId || typeof serverConfig.planId !== 'string') {
-        errors.push('serverConfig.planId is missing or invalid (must be a non-empty string)');
-        console.log('❌ serverConfig.planId validation failed:', serverConfig.planId, typeof serverConfig.planId);
-      }
+// Validate numeric fields with type coercion
+const totalCost = Number(serverConfig.totalCost);
+if (isNaN(totalCost) || totalCost <= 0) {
+  errors.push('serverConfig.totalCost is missing or invalid (must be a positive number)');
+  console.log('❌ serverConfig.totalCost validation failed:', serverConfig.totalCost, typeof serverConfig.totalCost, 'converted:', totalCost);
+}
 
-      if (!serverConfig.selectedServerType || typeof serverConfig.selectedServerType !== 'string') {
-        errors.push('serverConfig.selectedServerType is missing or invalid (must be a non-empty string)');
-        console.log('❌ serverConfig.selectedServerType validation failed:', serverConfig.selectedServerType, typeof serverConfig.selectedServerType);
-      }
+const totalRam = Number(serverConfig.totalRam);
+if (isNaN(totalRam) || totalRam <= 0) {
+  errors.push('serverConfig.totalRam is missing or invalid (must be a positive number)');
+  console.log('❌ serverConfig.totalRam validation failed:', serverConfig.totalRam, typeof serverConfig.totalRam, 'converted:', totalRam);
+}
 
-      if (!serverConfig.minecraftVersion || typeof serverConfig.minecraftVersion !== 'string') {
-        errors.push('serverConfig.minecraftVersion is missing or invalid (must be a non-empty string)');
-        console.log('❌ serverConfig.minecraftVersion validation failed:', serverConfig.minecraftVersion, typeof serverConfig.minecraftVersion);
-      }
+const maxPlayers = Number(serverConfig.maxPlayers);
+if (isNaN(maxPlayers) || maxPlayers <= 0) {
+  errors.push('serverConfig.maxPlayers is missing or invalid (must be a positive number)');
+  console.log('❌ serverConfig.maxPlayers validation failed:', serverConfig.maxPlayers, typeof serverConfig.maxPlayers, 'converted:', maxPlayers);
+}
 
-      // Validate numeric fields with type coercion
-      const totalCost = Number(serverConfig.totalCost);
-      if (isNaN(totalCost) || totalCost <= 0) {
-        errors.push('serverConfig.totalCost is missing or invalid (must be a positive number)');
-        console.log('❌ serverConfig.totalCost validation failed:', serverConfig.totalCost, typeof serverConfig.totalCost, 'converted:', totalCost);
-      }
+const viewDistance = Number(serverConfig.viewDistance);
+if (isNaN(viewDistance) || viewDistance <= 0) {
+  errors.push('serverConfig.viewDistance is missing or invalid (must be a positive number)');
+  console.log('❌ serverConfig.viewDistance validation failed:', serverConfig.viewDistance, typeof serverConfig.viewDistance, 'converted:', viewDistance);
+}
 
-      const totalRam = Number(serverConfig.totalRam);
-      if (isNaN(totalRam) || totalRam <= 0) {
-        errors.push('serverConfig.totalRam is missing or invalid (must be a positive number)');
-        console.log('❌ serverConfig.totalRam validation failed:', serverConfig.totalRam, typeof serverConfig.totalRam, 'converted:', totalRam);
-      }
+// Validate boolean fields with type checking
+if (typeof serverConfig.enableWhitelist !== 'boolean') {
+  errors.push('serverConfig.enableWhitelist is missing or invalid (must be a boolean)');
+  console.log('❌ serverConfig.enableWhitelist validation failed:', serverConfig.enableWhitelist, typeof serverConfig.enableWhitelist);
+}
 
-      const maxPlayers = Number(serverConfig.maxPlayers);
-      if (isNaN(maxPlayers) || maxPlayers <= 0) {
-        errors.push('serverConfig.maxPlayers is missing or invalid (must be a positive number)');
-        console.log('❌ serverConfig.maxPlayers validation failed:', serverConfig.maxPlayers, typeof serverConfig.maxPlayers, 'converted:', maxPlayers);
-      }
+if (typeof serverConfig.enablePvp !== 'boolean') {
+  errors.push('serverConfig.enablePvp is missing or invalid (must be a boolean)');
+  console.log('❌ serverConfig.enablePvp validation failed:', serverConfig.enablePvp, typeof serverConfig.enablePvp);
+}
 
-      const viewDistance = Number(serverConfig.viewDistance);
-      if (isNaN(viewDistance) || viewDistance <= 0) {
-        errors.push('serverConfig.viewDistance is missing or invalid (must be a positive number)');
-        console.log('❌ serverConfig.viewDistance validation failed:', serverConfig.viewDistance, typeof serverConfig.viewDistance, 'converted:', viewDistance);
-      }
+// Validate array fields
+if (!Array.isArray(serverConfig.selectedPlugins)) {
+  errors.push('serverConfig.selectedPlugins is missing or invalid (must be an array)');
+  console.log('❌ serverConfig.selectedPlugins validation failed:', serverConfig.selectedPlugins, typeof serverConfig.selectedPlugins);
+}
 
-      // Validate boolean fields with type checking
-      if (typeof serverConfig.enableWhitelist !== 'boolean') {
-        errors.push('serverConfig.enableWhitelist is missing or invalid (must be a boolean)');
-        console.log('❌ serverConfig.enableWhitelist validation failed:', serverConfig.enableWhitelist, typeof serverConfig.enableWhitelist);
-      }
-
-      if (typeof serverConfig.enablePvp !== 'boolean') {
-        errors.push('serverConfig.enablePvp is missing or invalid (must be a boolean)');
-        console.log('❌ serverConfig.enablePvp validation failed:', serverConfig.enablePvp, typeof serverConfig.enablePvp);
-      }
-
-      // Validate array fields
-      if (!Array.isArray(serverConfig.selectedPlugins)) {
-        errors.push('serverConfig.selectedPlugins is missing or invalid (must be an array)');
-        console.log('❌ serverConfig.selectedPlugins validation failed:', serverConfig.selectedPlugins, typeof serverConfig.selectedPlugins);
-      }
-    }
 
     if (errors.length > 0) {
       console.log('❌ Validation failed with errors:', errors);
