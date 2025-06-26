@@ -88,19 +88,19 @@ function calculatePricing(monthlyPrice, billingCycle, cycle) {
 }
 
 // Helper function to create session metadata
-function createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice) {
+function createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice, planId) {
   return {
     // Plan and billing info
-    planId: serverConfig.planId,
+    planId: planId,
     billingCycle: billingCycle,
     finalPrice: finalPrice.toString(),
     monthlyRate: serverConfig.totalCost.toString(),
     billingMultiplier: cycle.multiplier.toString(),
     billingDiscount: cycle.discount.toString(),
     
-    // Server configuration
+    // Server configuration - FIXED: Use serverType instead of selectedServerType
     serverName: serverConfig.serverName,
-    selectedServerType: serverConfig.selectedServerType || 'paper',
+    serverType: serverConfig.serverType, // ← FIXED: Changed from selectedServerType
     minecraftVersion: serverConfig.minecraftVersion || 'latest',
     totalRam: serverConfig.totalRam?.toString() || '4',
     maxPlayers: serverConfig.maxPlayers?.toString() || '20',
