@@ -8,7 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const MAX_SERVERS = 5; // Server capacity limit
 
-// FIXED: Enhanced CORS configuration with better error handling
+// Enhanced CORS configuration
 const corsOptions = {
   origin: [
     'http://localhost:3000',
@@ -17,6 +17,7 @@ const corsOptions = {
     'https://goosehosting.com',
     'https://www.goosehosting.com',
     'https://beta.goosehosting.com',
+    'https://stripeapibeta.goosehosting.com',
     process.env.FRONTEND_URL
   ].filter(Boolean),
   credentials: true,
@@ -29,30 +30,32 @@ const corsOptions = {
     'X-Requested-With',
     'stripe-signature'
   ],
-  optionsSuccessStatus: 200 // Some legacy browsers choke on 204
+  optionsSuccessStatus: 200
 };
 
 // Apply CORS middleware BEFORE other middlewares
 app.use(cors(corsOptions));
 
-// FIXED: Explicitly handle preflight OPTIONS requests
+// Explicitly handle preflight OPTIONS requests
 app.options('*', cors(corsOptions));
+
+// Raw body parser for webhooks (MUST be before express.json())
+app.use('/api/webhook', express.raw({ type: 'application/json' }));
 
 // Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// FIXED: Enhanced request logging middleware
+// Enhanced request logging middleware
 app.use((req, res, next) => {
   console.log(`\n[${new Date().toISOString()}] ${req.method} ${req.path}`);
   console.log('Origin:', req.get('Origin') || 'No origin header');
   console.log('User-Agent:', req.get('User-Agent') || 'No user agent');
   
-  if (req.method === 'POST') {
+  if (req.method === 'POST' && req.path !== '/api/webhook') {
     console.log('Body keys:', Object.keys(req.body || {}));
   }
   
-  // FIXED: Add response headers for debugging
   res.on('finish', () => {
     console.log(`Response: ${res.statusCode} ${res.statusMessage}`);
   });
@@ -124,7 +127,6 @@ function createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice, pl
     billingMultiplier: cycle.multiplier.toString(),
     billingDiscount: cycle.discount.toString(),
     serverName: serverConfig.serverName,
-    // FIXED: Use correct field name that matches frontend
     serverType: serverConfig.serverType || serverConfig.selectedServerType,
     minecraftVersion: serverConfig.minecraftVersion || 'latest',
     totalRam: serverConfig.totalRam?.toString() || '4',
@@ -139,8 +141,27 @@ function createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice, pl
 }
 
 /* ======================
-   TEST ENDPOINT - ENHANCED
+   ROUTES
    ====================== */
+
+// Root route
+app.get('/', (req, res) => {
+  res.json({
+    message: 'GooseHosting API Server',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    endpoints: [
+      'GET /api/test',
+      'GET /api/health',
+      'POST /api/create-checkout-session',
+      'GET /api/session-details/:sessionId',
+      'POST /api/webhook',
+      'GET /api/deployment-status/:sessionId'
+    ]
+  });
+});
+
+// Test endpoint
 app.get('/api/test', (req, res) => {
   console.log('🔍 Test endpoint hit!');
   res.json({ 
@@ -152,19 +173,35 @@ app.get('/api/test', (req, res) => {
     stripeConfigured: !!process.env.STRIPE_SECRET_KEY,
     corsOrigins: corsOptions.origin,
     requestOrigin: req.get('Origin'),
-    requestMethod: req.method,
-    requestHeaders: req.headers
+    requestMethod: req.method
   });
 });
 
-/* ======================
-   CREATE CHECKOUT SESSION - ENHANCED ERROR HANDLING
-   ====================== */
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    services: {
+      stripe: !!process.env.STRIPE_SECRET_KEY,
+      pterodactyl: !!PTERODACTYL_API_KEY
+    },
+    limits: {
+      maxServers: MAX_SERVERS
+    },
+    cors: {
+      enabled: true,
+      origins: corsOptions.origin
+    },
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Create checkout session endpoint
 app.post('/api/create-checkout-session', async (req, res) => {
   console.group('\n💰 CHECKOUT SESSION CREATION');
   console.log('📋 Request Origin:', req.get('Origin'));
   console.log('📋 Request Method:', req.method);
-  console.log('📋 Request Headers:', req.headers);
   
   try {
     const { planId, billingCycle, finalPrice, serverConfig } = req.body;
@@ -174,25 +211,23 @@ app.post('/api/create-checkout-session', async (req, res) => {
     console.log('  • billingCycle:', billingCycle);
     console.log('  • finalPrice:', finalPrice);
     console.log('  • serverConfig keys:', Object.keys(serverConfig || {}));
-    console.log('  • Full serverConfig:', JSON.stringify(serverConfig, null, 2));
     
-    // FIXED: Enhanced validation
+    // Validation
     const errors = [];
     if (!planId || typeof planId !== 'string') errors.push('Invalid planId');
     if (!billingCycle || typeof billingCycle !== 'string') errors.push('Invalid billingCycle');
     if (!finalPrice || typeof finalPrice !== 'number' || finalPrice <= 0) errors.push('Invalid finalPrice');
     if (!serverConfig || typeof serverConfig !== 'object') errors.push('Invalid serverConfig');
 
-    // FIXED: Validate serverConfig fields with better error messages
+    // Validate serverConfig fields
     if (serverConfig) {
       if (!serverConfig.serverName || !serverConfig.serverName.trim()) {
         errors.push('Server name is required and cannot be empty');
       }
       
-      // FIXED: Check for both possible field names
       const serverType = serverConfig.serverType || serverConfig.selectedServerType;
       if (!serverType) {
-        errors.push('Server type is required (serverType or selectedServerType field)');
+        errors.push('Server type is required');
       }
       
       if (!serverConfig.minecraftVersion) {
@@ -201,15 +236,6 @@ app.post('/api/create-checkout-session', async (req, res) => {
       
       if (typeof serverConfig.totalCost !== 'number' || serverConfig.totalCost <= 0) {
         errors.push('Invalid total cost - must be a positive number');
-      }
-      
-      // Add more detailed validation
-      if (typeof serverConfig.totalRam !== 'number' || serverConfig.totalRam <= 0) {
-        errors.push('Total RAM must be a positive number');
-      }
-      
-      if (typeof serverConfig.maxPlayers !== 'number' || serverConfig.maxPlayers <= 0) {
-        errors.push('Max players must be a positive number');
       }
     }
 
@@ -237,10 +263,13 @@ app.post('/api/create-checkout-session', async (req, res) => {
 
     const cycle = billingCycles[billingCycle];
     if (!cycle) {
-      return res.status(400).json({ error: 'Invalid billing cycle', validCycles: Object.keys(billingCycles) });
+      return res.status(400).json({ 
+        error: 'Invalid billing cycle', 
+        validCycles: Object.keys(billingCycles) 
+      });
     }
 
-    // FIXED: Ensure we have Stripe configured
+    // Ensure Stripe is configured
     if (!process.env.STRIPE_SECRET_KEY) {
       console.error('❌ Stripe secret key not configured');
       return res.status(500).json({ 
@@ -272,18 +301,15 @@ app.post('/api/create-checkout-session', async (req, res) => {
     // Create session metadata
     const sessionMetadata = createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice, planId);
 
-    console.log('💳 Creating Stripe session with:', {
-      priceData,
-      sessionMetadata
-    });
+    console.log('💳 Creating Stripe session...');
 
     // Create Stripe session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       mode: 'subscription',
       line_items: [{ price_data: priceData, quantity: 1 }],
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/setup/${encodeURIComponent(serverConfig.serverName)}?cancelled=true`,
+      success_url: `${process.env.FRONTEND_URL || 'https://beta.goosehosting.com'}/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://beta.goosehosting.com'}/setup/${encodeURIComponent(serverConfig.serverName)}?cancelled=true`,
       metadata: sessionMetadata,
       subscription_data: { metadata: sessionMetadata },
       customer_email: serverConfig.customerEmail || undefined,
@@ -292,7 +318,6 @@ app.post('/api/create-checkout-session', async (req, res) => {
 
     console.log('🎉 Checkout session created:', session.id);
     
-    // FIXED: Send proper CORS response
     res.json({
       sessionId: session.id,
       url: session.url,
@@ -303,7 +328,6 @@ app.post('/api/create-checkout-session', async (req, res) => {
     console.error('💥 Checkout Error:', error);
     console.error('💥 Error stack:', error.stack);
     
-    // FIXED: Better error response
     const errorResponse = {
       error: 'Failed to create checkout session',
       message: error.message,
@@ -320,9 +344,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
   }
 });
 
-/* ======================
-   SESSION DETAILS ENDPOINT
-   ====================== */
+// Session details endpoint
 app.get('/api/session-details/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -356,10 +378,8 @@ app.get('/api/session-details/:sessionId', async (req, res) => {
   }
 });
 
-/* ======================
-   WEBHOOK ENDPOINT
-   ====================== */
-app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+// Webhook endpoint
+app.post('/api/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
@@ -383,8 +403,6 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
       case 'checkout.session.completed':
         const session = event.data.object;
         console.log('💳 Payment completed for session:', session.id);
-        
-        // Create the server
         await createPterodactylServer(session);
         break;
 
@@ -407,8 +425,36 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
   res.json({ received: true });
 });
 
+// Deployment status endpoint
+app.get('/api/deployment-status/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    if (!process.env.STRIPE_SECRET_KEY) {
+      return res.status(500).json({ error: 'Stripe not configured' });
+    }
+    
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    
+    res.json({
+      status: session.metadata.serverStatus || 'pending',
+      serverName: session.metadata.serverName,
+      address: session.metadata.serverAddress,
+      panelUrl: session.metadata.panelUrl,
+      createdAt: session.metadata.createdAt,
+      updatedAt: session.metadata.updatedAt
+    });
+  } catch (error) {
+    console.error('Error checking deployment status:', error);
+    res.status(500).json({ 
+      error: 'Failed to check deployment status',
+      message: error.message 
+    });
+  }
+});
+
 /* ======================
-   CREATE PTERODACTYL SERVER
+   PTERODACTYL SERVER CREATION
    ====================== */
 async function createPterodactylServer(session) {
   console.group('\n🦆 CREATING PTERODACTYL SERVER');
@@ -467,59 +513,7 @@ async function createPterodactylServer(session) {
 }
 
 /* ======================
-   DEPLOYMENT STATUS ENDPOINT
-   ====================== */
-app.get('/api/deployment-status/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    
-    if (!process.env.STRIPE_SECRET_KEY) {
-      return res.status(500).json({ error: 'Stripe not configured' });
-    }
-    
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    
-    res.json({
-      status: session.metadata.serverStatus || 'pending',
-      serverName: session.metadata.serverName,
-      address: session.metadata.serverAddress,
-      panelUrl: session.metadata.panelUrl,
-      createdAt: session.metadata.createdAt,
-      updatedAt: session.metadata.updatedAt
-    });
-  } catch (error) {
-    console.error('Error checking deployment status:', error);
-    res.status(500).json({ 
-      error: 'Failed to check deployment status',
-      message: error.message 
-    });
-  }
-});
-
-/* ======================
-   HEALTH CHECK
-   ====================== */
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    services: {
-      stripe: !!process.env.STRIPE_SECRET_KEY,
-      pterodactyl: !!PTERODACTYL_API_KEY
-    },
-    limits: {
-      maxServers: MAX_SERVERS
-    },
-    cors: {
-      enabled: true,
-      origins: corsOptions.origin
-    },
-    environment: process.env.NODE_ENV || 'development'
-  });
-});
-
-/* ======================
-   ERROR HANDLING - ENHANCED
+   ERROR HANDLING
    ====================== */
 app.use((err, req, res, next) => {
   console.error('❌ Unhandled error:', err);
@@ -537,15 +531,13 @@ app.use((err, req, res, next) => {
   });
 });
 
-// FIXED: 404 Handler with better debugging (MUST BE LAST)
+// 404 Handler (MUST BE LAST)
 app.use((req, res) => {
   console.log('❌ 404 - Route not found:', {
     method: req.method,
     path: req.path,
     url: req.url,
-    origin: req.get('Origin'),
-    userAgent: req.get('User-Agent'),
-    headers: req.headers
+    origin: req.get('Origin')
   });
   
   res.status(404).json({
@@ -554,19 +546,20 @@ app.use((req, res) => {
     method: req.method,
     timestamp: new Date().toISOString(),
     availableEndpoints: [
+      'GET /',
       'GET /api/test',
+      'GET /api/health',
       'POST /api/create-checkout-session',
       'GET /api/session-details/:sessionId',
       'POST /api/webhook',
-      'GET /api/deployment-status/:sessionId',
-      'GET /api/health'
+      'GET /api/deployment-status/:sessionId'
     ],
     suggestion: `Did you mean to request one of the available endpoints? Current request: ${req.method} ${req.path}`
   });
 });
 
 /* ======================
-   SERVER STARTUP - ENHANCED
+   SERVER STARTUP
    ====================== */
 app.listen(PORT, () => {
   console.log('\n🦆 === GOOSE HOSTING BACKEND ===');
