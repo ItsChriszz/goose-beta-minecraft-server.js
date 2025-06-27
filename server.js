@@ -13,15 +13,27 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'http://localhost:5173',
+    'http://localhost:4173',
     'https://goosehosting.com',
     'https://www.goosehosting.com',
     'https://beta.goosehosting.com',
     process.env.FRONTEND_URL
   ].filter(Boolean),
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'Accept',
+    'Origin',
+    'X-Requested-With',
+    'stripe-signature'
+  ],
+  optionsSuccessStatus: 200
 }));
+
+// Add explicit OPTIONS handler for preflight requests
+app.options('*', cors());
 
 // Middleware
 app.use(express.json({ limit: '10mb' }));
@@ -30,6 +42,9 @@ app.use(express.urlencoded({ extended: true }));
 // Request logging middleware
 app.use((req, res, next) => {
   console.log(`\n[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  if (req.method === 'POST') {
+    console.log('Body keys:', Object.keys(req.body || {}));
+  }
   next();
 });
 
@@ -111,54 +126,18 @@ function createSessionMetadata(serverConfig, billingCycle, cycle, finalPrice, pl
 }
 
 /* ======================
-   PRECHECK ENDPOINT
+   TEST ENDPOINT
    ====================== */
-app.post('/api/precheck', async (req, res) => {
-  console.group('\n🔍 SERVER CAPACITY PRECHECK');
-  try {
-    const { nodeId } = req.body;
-    
-    if (!nodeId) {
-      console.error('❌ Missing nodeId');
-      return res.status(400).json({ 
-        error: 'Node ID is required',
-        received: req.body 
-      });
-    }
-
-    console.log('🔄 Querying Pterodactyl API for server count...');
-    const serversResponse = await axios.get(`${PTERODACTYL_BASE}/api/application/servers`, {
-      headers: {
-        'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
-        'Accept': 'application/json'
-      }
-    });
-
-    const currentServerCount = serversResponse.data.meta.pagination.total;
-    const remainingCapacity = MAX_SERVERS - currentServerCount;
-    
-    console.log(`📊 Server Capacity: ${currentServerCount}/${MAX_SERVERS} (${remainingCapacity} remaining)`);
-
-    res.json({
-      success: true,
-      serverCount: currentServerCount,
-      serverLimit: MAX_SERVERS,
-      canDeploy: currentServerCount < MAX_SERVERS,
-      remainingCapacity,
-      message: currentServerCount < MAX_SERVERS 
-        ? 'Server can be deployed' 
-        : `Server limit reached (${currentServerCount}/${MAX_SERVERS})`
-    });
-
-  } catch (error) {
-    console.error('❌ Precheck Error:', error);
-    res.status(500).json({ 
-      error: 'Failed to check server capacity',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  } finally {
-    console.groupEnd();
-  }
+app.get('/api/test', (req, res) => {
+  console.log('🔍 Test endpoint hit!');
+  res.json({ 
+    message: 'Backend is working!', 
+    timestamp: new Date().toISOString(),
+    cors: 'enabled',
+    environment: process.env.NODE_ENV || 'development',
+    port: PORT,
+    stripeConfigured: !!process.env.STRIPE_SECRET_KEY
+  });
 });
 
 /* ======================
@@ -167,31 +146,13 @@ app.post('/api/precheck', async (req, res) => {
 app.post('/api/create-checkout-session', async (req, res) => {
   console.group('\n💰 CHECKOUT SESSION CREATION');
   try {
-    // First check server count
-    const serversResponse = await axios.get(`${PTERODACTYL_BASE}/api/application/servers`, {
-      headers: {
-        'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
-        'Accept': 'application/json'
-      }
-    });
-
-    const currentServerCount = serversResponse.data.meta.pagination.total;
-    const remainingCapacity = MAX_SERVERS - currentServerCount;
-    
-    console.log(`📊 Current Usage: ${currentServerCount}/${MAX_SERVERS} (${remainingCapacity} remaining)`);
-
-    if (currentServerCount >= MAX_SERVERS) {
-      console.error(`🚨 Deployment Blocked: At capacity (${currentServerCount}/${MAX_SERVERS})`);
-      return res.status(403).json({
-        error: 'Server limit reached',
-        serverCount: currentServerCount,
-        serverLimit: MAX_SERVERS,
-        remainingCapacity: 0,
-        message: `Cannot deploy (${currentServerCount}/${MAX_SERVERS} servers in use)`
-      });
-    }
-
     const { planId, billingCycle, finalPrice, serverConfig } = req.body;
+    
+    console.log('📋 Request Data:');
+    console.log('  • planId:', planId);
+    console.log('  • billingCycle:', billingCycle);
+    console.log('  • finalPrice:', finalPrice);
+    console.log('  • serverConfig keys:', Object.keys(serverConfig || {}));
     
     // Validate input
     const errors = [];
@@ -200,7 +161,16 @@ app.post('/api/create-checkout-session', async (req, res) => {
     if (!finalPrice || typeof finalPrice !== 'number' || finalPrice <= 0) errors.push('Invalid finalPrice');
     if (!serverConfig || typeof serverConfig !== 'object') errors.push('Invalid serverConfig');
 
+    // Validate serverConfig fields
+    if (serverConfig) {
+      if (!serverConfig.serverName || !serverConfig.serverName.trim()) errors.push('Server name is required');
+      if (!serverConfig.serverType) errors.push('Server type is required');
+      if (!serverConfig.minecraftVersion) errors.push('Minecraft version is required');
+      if (typeof serverConfig.totalCost !== 'number' || serverConfig.totalCost <= 0) errors.push('Invalid total cost');
+    }
+
     if (errors.length > 0) {
+      console.error('❌ Validation errors:', errors);
       return res.status(400).json({ errors });
     }
 
@@ -253,15 +223,10 @@ app.post('/api/create-checkout-session', async (req, res) => {
       allow_promotion_codes: true
     });
 
-    console.log(`🎉 Checkout created (${currentServerCount + 1}/${MAX_SERVERS} servers will be active)`);
+    console.log('🎉 Checkout session created:', session.id);
     res.json({
       sessionId: session.id,
-      url: session.url,
-      capacity: {
-        current: currentServerCount,
-        limit: MAX_SERVERS,
-        remaining: remainingCapacity - 1
-      }
+      url: session.url
     });
 
   } catch (error) {
@@ -272,6 +237,35 @@ app.post('/api/create-checkout-session', async (req, res) => {
     });
   } finally {
     console.groupEnd();
+  }
+});
+
+/* ======================
+   SESSION DETAILS ENDPOINT
+   ====================== */
+app.get('/api/session-details/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    console.log('🔍 Fetching session details for:', sessionId);
+    
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['customer', 'subscription']
+    });
+    
+    res.json({
+      id: session.id,
+      status: session.status,
+      payment_status: session.payment_status,
+      customer_email: session.customer_details?.email || session.customer_email,
+      amount_total: session.amount_total,
+      currency: session.currency,
+      metadata: session.metadata,
+      created: session.created,
+      url: session.url
+    });
+  } catch (error) {
+    console.error('Error fetching session details:', error);
+    res.status(500).json({ error: 'Failed to fetch session details' });
   }
 });
 
@@ -347,6 +341,7 @@ async function createPterodactylServer(session) {
     const serverAddress = `mc.goosehosting.com:${serverPort}`;
 
     console.log('🌐 Server Address:', serverAddress);
+    console.log('🔑 Credentials:', credentials);
     console.log('✅ Server created successfully!');
 
     // Update Stripe session with server details
@@ -359,6 +354,10 @@ async function createPterodactylServer(session) {
         serverStatus: 'created',
         serverUsername: credentials.username,
         serverPassword: credentials.password,
+        ftpHost: 'ftp.goosehosting.com',
+        ftpPort: '21',
+        ftpUsername: credentials.username,
+        ftpPassword: credentials.password,
         panelUrl: `https://panel.goosehosting.com/server/${serverUuid}`,
         updatedAt: new Date().toISOString()
       }
@@ -430,12 +429,21 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 Handler
+// 404 Handler (MUST BE LAST)
 app.use((req, res) => {
+  console.log('❌ 404 - Route not found:', req.method, req.path);
   res.status(404).json({
     error: 'Endpoint not found',
     path: req.path,
-    method: req.method
+    method: req.method,
+    availableEndpoints: [
+      'GET /api/test',
+      'POST /api/create-checkout-session',
+      'GET /api/session-details/:sessionId',
+      'POST /api/webhook',
+      'GET /api/deployment-status/:sessionId',
+      'GET /api/health'
+    ]
   });
 });
 
@@ -450,4 +458,6 @@ app.listen(PORT, () => {
   console.log(`🦅 Pterodactyl: ${PTERODACTYL_API_KEY ? 'Connected' : 'Disabled'}`);
   console.log(`🚦 Server Limit: ${MAX_SERVERS}`);
   console.log('===============================');
+  console.log('🔍 Test endpoint: http://localhost:' + PORT + '/api/test');
+  console.log('===============================\n');
 });
