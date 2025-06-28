@@ -1,7 +1,48 @@
+// server.js - Complete implementation with imports and server limit checking
 
-// server.js - Updated sections for server credentials
+// Required imports
+const axios = require('axios');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// Add this function to generate server credentials
+// Pterodactyl configuration
+const PTERODACTYL_BASE = process.env.PTERODACTYL_BASE;
+const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
+
+// Server limit checking middleware
+const checkServerLimits = async (req, res, next) => {
+  try {
+    // Example check: max 5 servers per node
+    const nodeId = process.env.PTERODACTYL_NODE_ID;
+    const response = await axios.get(`${PTERODACTYL_BASE}/nodes/${nodeId}/servers`, {
+      headers: {
+        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
+        Accept: 'application/json'
+      }
+    });
+    
+    const currentServers = response.data.data.length;
+    if (currentServers >= 5) {
+      return res.status(403).json({ error: 'Server limit reached for this node.' });
+    }
+    
+    next(); // continue to the actual route handler
+  } catch (err) {
+    console.error('❌ Server check failed:', err.message);
+    return res.status(500).json({ error: 'Internal error during server validation.' });
+  }
+};
+
+// Generate secure password utility
+function generateRandomPassword(length = 16) {
+  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+  let password = '';
+  for (let i = 0; i < length; i++) {
+    password += charset.charAt(Math.floor(Math.random() * charset.length));
+  }
+  return password;
+}
+
+// Generate server credentials
 function generateServerCredentials(customerEmail, serverName) {
   // Generate a secure password for the server
   const serverPassword = generateRandomPassword(16);
@@ -17,7 +58,20 @@ function generateServerCredentials(customerEmail, serverName) {
   };
 }
 
-// Update the createPterodactylServer function
+// Fetch Pterodactyl metadata (you'll need to implement this function)
+async function fetchPterodactylMeta(customerEmail) {
+  // This function should return the configuration needed for server creation
+  // Example implementation:
+  return {
+    userId: process.env.PTERODACTYL_USER_ID, // The user ID in Pterodactyl
+    nodeId: process.env.PTERODACTYL_NODE_ID, // The node to create server on
+    eggId: process.env.PTERODACTYL_EGG_ID, // The egg ID for Minecraft servers
+    dockerImage: 'ghcr.io/pterodactyl/yolks:java_17', // Docker image for Java
+    startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}'
+  };
+}
+
+// Main server creation function
 async function createPterodactylServer(session) {
   try {
     console.log('🦆 GOOSE HOSTING - PTERODACTYL DEPLOYMENT');
@@ -230,3 +284,20 @@ async function createPterodactylServer(session) {
     throw err;
   }
 }
+
+// Example route using the middleware
+// app.post('/api/create-server', checkServerLimits, async (req, res) => {
+//   try {
+//     const result = await createPterodactylServer(req.body.session);
+//     res.json(result);
+//   } catch (error) {
+//     res.status(500).json({ error: error.message });
+//   }
+// });
+
+module.exports = {
+  createPterodactylServer,
+  checkServerLimits,
+  generateServerCredentials,
+  generateRandomPassword
+};
