@@ -1,10 +1,15 @@
-import * as z from "zod/v4";   // import Zod
+const z = require('zod');        // Fixed Zod import
 var express = require('express'); // 1. Import express first
 var app = express();              // 2. Then call it
 app.use(express.json());         // 3. Middleware setup
 
+//logging   
+app.use((req, res, next) => {
+    console.log(`${req.method} ${req.path}`, req.body);
+    next();
+});
 
-//zod data validation 
+//zod data validation  
 const ServerData = z.object({
     planId: z.string(),
     billingCycle: z.string(),
@@ -24,23 +29,23 @@ const ServerData = z.object({
       customerEmail: z.string().optional(),
       timestamp: z.string() // ISO string, can also use z.string().datetime() in newer versions
     })
-  });
+});
 
-//middleware function
-
-//function to check if server is full
-
-
-//function to block if request is missing params
+//middleware function  
+//function to check if server is full   
+//function to block if request is missing params  
 
 app.post('/api/create-checkout-session', (req, res) => {
     try {
       const validated = ServerData.parse(req.body);
-  
+         
       console.log('✅ Valid data received:');
       console.dir(validated, { depth: null });
-  
-      res.status(200).json({ message: 'Data is valid!', serverName: validated.serverConfig.serverName });
+         
+      res.status(200).json({ 
+        message: 'Data is valid!', 
+        serverName: validated.serverConfig.serverName 
+      });
     } catch (err) {
       console.error('❌ Validation failed:', err.errors);
       res.status(400).json({
@@ -48,16 +53,16 @@ app.post('/api/create-checkout-session', (req, res) => {
         details: err.errors
       });
     }
-  });
+});
 
-  //defining port
-
-  const PORT = process.env.PORT || 3001;
+//defining port   
+const PORT = process.env.PORT || 3001;
 
 /* ======================
    SERVER STARTUP
    ====================== */
-   app.listen(PORT, () => {
+
+app.listen(PORT, () => {
     console.log('\n🦆 === GOOSE HOSTING BACKEND ===');
     console.log(`🌐 Port: ${PORT}`);
     // console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
@@ -65,4 +70,4 @@ app.post('/api/create-checkout-session', (req, res) => {
     // console.log(`🦅 Pterodactyl: ${PTERODACTYL_API_KEY ? 'Connected' : 'Disabled'}`);
     // console.log(`🚦 Server Limit: ${MAX_SERVERS}`);
     console.log('===============================\n');
-  });
+});
