@@ -1,165 +1,123 @@
-// server.js - Fixed implementation with proper email extraction and validation
+// Fixed server limit checking - Add this to your server.js
 
-const app = express();
-
-// Required imports
-const axios = require('axios');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-
-// Pterodactyl configuration
-const PTERODACTYL_BASE = process.env.PTERODACTYL_BASE;
-const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
-const MaxServersPerNode = process.env.MaxServersPerNode;
-const nodeId = process.env.PTERODACTYL_NODE_ID;
-
-// Helper function to extract customer email from Stripe session
-function extractCustomerEmail(session) {
-  console.log('🔍 Extracting customer email from Stripe session...');
-  console.log('Available session data:', {
-    customer_details: session.customer_details,
-    customer_email: session.customer_email,
-    customer: session.customer,
-    metadata: session.metadata
-  });
-
-  // Try different ways to get the email
-  const possibleEmails = [
-    session.customer_details?.email,
-    session.customer_email,
-    session.metadata?.customerEmail,
-    session.metadata?.customer_email,
-    session.customer?.email
-  ].filter(email => email && email.includes('@')); // Filter out undefined/invalid emails
-
-  console.log('Found possible emails:', possibleEmails);
-
-  if (possibleEmails.length === 0) {
-    console.error('❌ No valid email found in Stripe session');
-    throw new Error('Customer email not found in Stripe session. Please ensure customer email is collected during checkout.');
-  }
-
-  const customerEmail = possibleEmails[0]; // Use the first valid email found
-  console.log('✅ Using customer email:', customerEmail);
-  return customerEmail;
-}
-
-// Create user function - with better error handling
-const CreateUser = async (email) => {
+// Server limit checking middleware - FIXED
+const checkServerLimits = async (req, res, next) => {
   try {
-    // Validate email first
-    if (!email || !email.includes('@')) {
-      throw new Error('Invalid email provided to CreateUser function');
-    }
-
-    console.log("Checking if user exists for email:", email);
+    console.log('🔍 Checking server limits...');
     
-    // STEP 1: First check if user already exists by email
-    try {
-      const searchResponse = await axios.get(`${PTERODACTYL_BASE}/users?filter[email]=${encodeURIComponent(email)}`, {
+    const nodeId = process.env.PTERODACTYL_NODE_ID;
+    const maxServers = parseInt(process.env.MaxServersPerNode) || 50; // Convert to number with fallback
+    
+    console.log(`Node ID: ${nodeId}, Max Servers: ${maxServers}`);
+    
+    // Get current server count on this node
+    const response = await axios.get(`${PTERODACTYL_BASE}/nodes/${nodeId}`, {
+      headers: {
+        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
+        Accept: 'application/json'
+      }
+    });
+    
+    // Check if the node data includes server count
+    let currentServers = 0;
+    
+    // Try to get server count from node stats
+    if (response.data.attributes && response.data.attributes.allocated_resources) {
+      // Some panels provide server count in allocated_resources
+      currentServers = response.data.attributes.allocated_resources.servers || 0;
+    } else {
+      // Fallback: Query all servers and count those on this node
+      console.log('📊 Fetching all servers to count node usage...');
+      const serversResponse = await axios.get(`${PTERODACTYL_BASE}/servers`, {
         headers: {
           Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
           Accept: 'application/json'
         }
       });
       
-      if (searchResponse.data.data.length > 0) {
-        const existingUser = searchResponse.data.data[0].attributes;
-        console.log("✅ User already exists:", existingUser.email);
-        return {
-          success: true,
-          userId: existingUser.id,
-          username: existingUser.username,
-          email: existingUser.email,
-          existing: true
-        };
-      }
-      
-      console.log("User doesn't exist, proceeding to create new user");
-    } catch (searchError) {
-      console.log("⚠️ Error searching for existing user, proceeding with creation:", searchError.message);
+      // Count servers on this specific node
+      currentServers = serversResponse.data.data.filter(server => 
+        server.attributes.node === parseInt(nodeId)
+      ).length;
     }
     
-    // STEP 2: If user doesn't exist, create new user
-    console.log("Creating new user for email:", email);
+    console.log(`Current servers on node ${nodeId}: ${currentServers}/${maxServers}`);
     
-    // Generate username from email (remove @ and everything after, clean special chars)
-    let username = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    
-    // Ensure username is at least 3 characters and not longer than 16
-    if (username.length < 3) {
-      username = username + Math.random().toString(36).substring(2, 5);
-    }
-    if (username.length > 16) {
-      username = username.substring(0, 16);
+    if (currentServers >= maxServers) {
+      console.log('❌ Server limit reached!');
+      return res.status(403).json({ 
+        error: 'Server limit reached for this node.',
+        currentServers,
+        maxServers,
+        nodeId
+      });
     }
     
-    const userData = {
-      email: email,
-      username: username,
-      first_name: username,
-      last_name: "User"
-    };
+    console.log('✅ Server limit check passed');
+    req.serverLimitInfo = { currentServers, maxServers, nodeId };
+    next();
     
-    console.log("Creating user with data:", userData);
-    
-    const response = await axios.post(`${PTERODACTYL_BASE}/users`, userData, {
-      headers: {
-        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-        Accept: 'application/json',
-        'Content-Type': 'application/json'
-      }
+  } catch (err) {
+    console.error('❌ Server limit check failed:', err.response?.data || err.message);
+    return res.status(500).json({ 
+      error: 'Internal error during server validation.',
+      details: err.message
     });
+  }
+};
+
+// UPDATED: Main server creation function with limit checking
+async function createPterodactylServer(session) {
+  try {
+    console.log('🦆 GOOSE HOSTING - PTERODACTYL DEPLOYMENT');
+    console.log('==========================================');
+
+    // STEP 0: CHECK SERVER LIMITS FIRST
+    console.log('🔍 Checking server limits before creation...');
+    const nodeId = process.env.PTERODACTYL_NODE_ID;
+    const maxServers = parseInt(process.env.MaxServersPerNode) || 50;
     
-    console.log("✅ User created successfully:", response.data.attributes.email);
-    return {
-      success: true,
-      userId: response.data.attributes.id,
-      username: response.data.attributes.username,
-      email: response.data.attributes.email,
-      existing: false
-    };
-    
-  } catch (error) {
-    console.log("❌ Error in CreateUser:", error.response?.data || error.message);
-    
-    // Fallback: If creation failed due to existing user (422), try to find them one more time
-    if (error.response?.status === 422) {
-      console.log("Creation failed due to conflict, making final attempt to find existing user...");
-      try {
-        const searchResponse = await axios.get(`${PTERODACTYL_BASE}/users?filter[email]=${encodeURIComponent(email)}`, {
+    try {
+      const response = await axios.get(`${PTERODACTYL_BASE}/nodes/${nodeId}`, {
+        headers: {
+          Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
+          Accept: 'application/json'
+        }
+      });
+      
+      let currentServers = 0;
+      
+      // Try to get server count from node stats
+      if (response.data.attributes && response.data.attributes.allocated_resources) {
+        currentServers = response.data.attributes.allocated_resources.servers || 0;
+      } else {
+        // Fallback: Query all servers and count those on this node
+        const serversResponse = await axios.get(`${PTERODACTYL_BASE}/servers`, {
           headers: {
             Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
             Accept: 'application/json'
           }
         });
         
-        if (searchResponse.data.data.length > 0) {
-          const existingUser = searchResponse.data.data[0].attributes;
-          console.log("✅ Found existing user on fallback search:", existingUser.email);
-          return {
-            success: true,
-            userId: existingUser.id,
-            username: existingUser.username,
-            email: existingUser.email,
-            existing: true
-          };
-        }
-      } catch (searchError) {
-        console.log("❌ Final search also failed:", searchError.message);
+        currentServers = serversResponse.data.data.filter(server => 
+          server.attributes.node === parseInt(nodeId)
+        ).length;
       }
+      
+      console.log(`Current servers: ${currentServers}/${maxServers} on node ${nodeId}`);
+      
+      if (currentServers >= maxServers) {
+        throw new Error(`Server limit reached: ${currentServers}/${maxServers} servers on node ${nodeId}`);
+      }
+      
+      console.log('✅ Server limit check passed');
+      
+    } catch (limitError) {
+      console.error('❌ Server limit check failed:', limitError.message);
+      throw new Error(`Server creation blocked: ${limitError.message}`);
     }
-    
-    throw error;
-  }
-};
 
-// Main server creation function - FIXED with proper email validation
-async function createPterodactylServer(session) {
-  try {
-    console.log('🦆 GOOSE HOSTING - PTERODACTYL DEPLOYMENT');
-    console.log('==========================================');
-
-    // STEP 0: Extract and validate customer email FIRST
+    // STEP 1: Extract and validate customer email
     let customerEmail;
     try {
       customerEmail = extractCustomerEmail(session);
@@ -170,7 +128,7 @@ async function createPterodactylServer(session) {
 
     console.log('📧 Validated Customer Email:', customerEmail);
 
-    // STEP 1: Create or find the user with the validated email
+    // STEP 2: Create or find the user with the validated email
     console.log('👤 Creating/finding Pterodactyl user...');
     let userResult;
     try {
@@ -186,7 +144,7 @@ async function createPterodactylServer(session) {
       throw new Error(`User operation failed: ${userError.message}`);
     }
 
-    // Continue with the rest of your server creation logic...
+    // Rest of your existing server creation logic continues here...
     const config = await fetchPterodactylMeta(customerEmail);
     
     // Extract individual metadata fields (all are strings from Stripe)
@@ -249,10 +207,10 @@ async function createPterodactylServer(session) {
         serverJar = 'server.jar';
     }
 
-    // STEP 2: Create the server with the validated user as owner
+    // STEP 3: Create the server with the validated user as owner
     const serverData = {
       name: serverName,
-      user: userResult.userId, // Use the validated user ID
+      user: userResult.userId,
       egg: config.eggId,
       docker_image: config.dockerImage,
       startup: config.startup,
@@ -368,129 +326,48 @@ async function createPterodactylServer(session) {
   }
 }
 
-// Assign user to server as subuser (keeping your existing function)
-const AssignUserToServer = async (serverId, userId, email) => {
-  try {
-    console.log(`Assigning user ${userId} (${email}) to server ${serverId}`);
-    
-    const response = await axios.post(`${PTERODACTYL_BASE}/servers/${serverId}/users`, 
-      {
-        email: email,
-        permissions: [
-          "control.console",
-          "control.start",
-          "control.stop",
-          "control.restart",
-          "file.create",
-          "file.read",
-          "file.update",
-          "file.delete",
-          "file.sftp"
-        ]
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
-          Accept: 'application/json',
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    
-    console.log("✅ User assigned to server successfully");
-    return { success: true, data: response.data };
-    
-  } catch (error) {
-    console.log("❌ Error assigning user to server:", error.response?.data || error.message);
-    throw error;
-  }
-};
+// If you're using Express routes, make sure to apply the middleware:
+// app.post('/create-server', checkServerLimits, (req, res) => {
+//   // Your server creation route handler
+// });
 
-// Server limit checking middleware
-const checkServerLimits = async (req, res, next) => {
+// Alternative: Function to check limits before any operation
+async function checkNodeServerLimit() {
+  const nodeId = process.env.PTERODACTYL_NODE_ID;
+  const maxServers = parseInt(process.env.MaxServersPerNode) || 50;
+  
   try {
-    const nodeId = process.env.PTERODACTYL_NODE_ID;
-    const response = await axios.get(`${PTERODACTYL_BASE}/nodes/${nodeId}/servers`, {
+    const response = await axios.get(`${PTERODACTYL_BASE}/servers`, {
       headers: {
         Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
         Accept: 'application/json'
       }
     });
     
-    const currentServers = response.data.data.length;
-    if (currentServers >= MaxServersPerNode) {
-      return res.status(403).json({ error: 'Server limit reached for this node.' });
-    }
+    const currentServers = response.data.data.filter(server => 
+      server.attributes.node === parseInt(nodeId)
+    ).length;
     
-    next();
-  } catch (err) {
-    console.error('❌ Server check failed:', err.message);
-    return res.status(500).json({ error: 'Internal error during server validation.' });
-  }
-};
-
-// Generate secure password utility
-function generateRandomPassword(length = 16) {
-  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-  let password = '';
-  for (let i = 0; i < length; i++) {
-    password += charset.charAt(Math.floor(Math.random() * charset.length));
-  }
-  return password;
-}
-
-// Generate server credentials
-function generateServerCredentials(customerEmail, serverName) {
-  const serverPassword = generateRandomPassword(16);
-  const username = customerEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-  const finalUsername = username + '_' + Date.now().toString().slice(-4);
-  
-  return {
-    username: finalUsername,
-    password: serverPassword,
-    serverName: serverName
-  };
-}
-
-// Fetch Pterodactyl metadata
-async function fetchPterodactylMeta(customerEmail) {
-  return {
-    userId: process.env.PTERODACTYL_USER_ID,
-    nodeId: process.env.PTERODACTYL_NODE_ID,
-    eggId: process.env.PTERODACTYL_EGG_ID,
-    dockerImage: 'ghcr.io/pterodactyl/yolks:java_17',
-    startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}'
-  };
-}
-
-// Updated CreatePanelAccount function
-const CreatePanelAccount = async (req, res, next) => {
-  try {
-    const { email, serverId } = req.body;
-    
-    if (!email || !serverId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: "Email and serverId are required" 
-      });
-    }
-    
-    const result = await AssignUserToServer(serverId, null, email);
-    res.json(result);
-    
+    return {
+      canCreate: currentServers < maxServers,
+      currentServers,
+      maxServers,
+      nodeId
+    };
   } catch (error) {
-    console.log("Error in CreatePanelAccount:", error.response?.data || error.message);
-    res.status(500).json({ success: false, error: "Failed to create panel account" });
+    console.error('Error checking server limits:', error.message);
+    throw error;
   }
-};
+}
 
 module.exports = {
   createPterodactylServer,
   checkServerLimits,
+  checkNodeServerLimit, // Export the standalone function
   generateServerCredentials,
   generateRandomPassword,
   CreateUser,
   AssignUserToServer,
   CreatePanelAccount,
-  extractCustomerEmail // Export the new helper function
+  extractCustomerEmail
 };
