@@ -1,73 +1,232 @@
-const z = require('zod');        // Fixed Zod import
-var express = require('express'); // 1. Import express first
-var app = express();              // 2. Then call it
-app.use(express.json());         // 3. Middleware setup
 
-//logging   
-app.use((req, res, next) => {
-    console.log(`${req.method} ${req.path}`, req.body);
-    next();
-});
+// server.js - Updated sections for server credentials
 
-//zod data validation  
-const ServerData = z.object({
-    planId: z.string(),
-    billingCycle: z.string(),
-    finalPrice: z.number(),
-    serverConfig: z.object({
-      serverName: z.string().min(1),
-      planId: z.string(),
-      serverType: z.enum(['vanilla', 'paper', 'spigot', 'fabric', 'forge']),
-      minecraftVersion: z.string(),
-      totalRam: z.number().min(1),
-      maxPlayers: z.number().min(1),
-      viewDistance: z.number().min(1),
-      enableWhitelist: z.boolean(),
-      enablePvp: z.boolean(),
-      selectedPlugins: z.array(z.string()),
-      totalCost: z.number().min(0),
-      customerEmail: z.string().optional(),
-      timestamp: z.string() // ISO string, can also use z.string().datetime() in newer versions
-    })
-});
+// Add this function to generate server credentials
+function generateServerCredentials(customerEmail, serverName) {
+  // Generate a secure password for the server
+  const serverPassword = generateRandomPassword(16);
+  
+  // Create username from email (clean format)
+  const username = customerEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const finalUsername = username + '_' + Date.now().toString().slice(-4);
+  
+  return {
+    username: finalUsername,
+    password: serverPassword,
+    serverName: serverName
+  };
+}
 
-//middleware function  
-//function to check if server is full   
-//function to block if request is missing params  
+// Update the createPterodactylServer function
+async function createPterodactylServer(session) {
+  try {
+    console.log('🦆 GOOSE HOSTING - PTERODACTYL DEPLOYMENT');
+    console.log('==========================================');
+    console.log('📋 Session Metadata:', session.metadata);
 
-app.post('/api/create-checkout-session', (req, res) => {
-    try {
-      const validated = ServerData.parse(req.body);
-         
-      console.log('✅ Valid data received:');
-      console.dir(validated, { depth: null });
-         
-      res.status(200).json({ 
-        message: 'Data is valid!', 
-        serverName: validated.serverConfig.serverName 
-      });
-    } catch (err) {
-      console.error('❌ Validation failed:', err.errors);
-      res.status(400).json({
-        error: 'Validation failed',
-        details: err.errors
-      });
+    // Get customer email from Stripe session
+    const customerEmail = session.customer_details?.email || session.customer_email || 'admin@goosehosting.com';
+    console.log('📧 Customer Email:', customerEmail);
+
+    const config = await fetchPterodactylMeta(customerEmail);
+    
+    // Extract individual metadata fields (all are strings from Stripe)
+    const serverName = session.metadata.serverName || `GooseServer-${Date.now()}`;
+    const serverType = session.metadata.serverType || 'paper';
+    const minecraftVersion = session.metadata.minecraftVersion || 'latest';
+    const planId = session.metadata.planId || 'pro';
+    const maxPlayers = parseInt(session.metadata.maxPlayers) || 20;
+    const totalRam = parseInt(session.metadata.totalRam) || 4;
+    const viewDistance = parseInt(session.metadata.viewDistance) || 10;
+    const enableWhitelist = session.metadata.enableWhitelist === 'true';
+    const enablePvp = session.metadata.enablePvp === 'true';
+    const selectedPlugins = session.metadata.selectedPlugins ? session.metadata.selectedPlugins.split(',') : [];
+
+    console.log('🎮 Server Configuration:');
+    console.log('  • Server Name:', serverName);
+    console.log('  • Server Type:', serverType);
+    console.log('  • Minecraft Version:', minecraftVersion);
+    console.log('  • Plan:', planId);
+    console.log('  • Max Players:', maxPlayers);
+    console.log('  • RAM:', totalRam + 'GB');
+    console.log('  • View Distance:', viewDistance);
+    console.log('  • Whitelist:', enableWhitelist);
+    console.log('  • PvP:', enablePvp);
+    console.log('  • Plugins:', selectedPlugins.length > 0 ? selectedPlugins.join(', ') : 'None');
+
+    // Generate server credentials
+    const credentials = generateServerCredentials(customerEmail, serverName);
+    console.log('🔐 Generated Credentials:');
+    console.log('  • Username:', credentials.username);
+    console.log('  • Password:', credentials.password);
+
+    // Get the allocation info BEFORE creating the server
+    const allocRes = await axios.get(`${PTERODACTYL_BASE}/nodes/${config.nodeId}/allocations`, {
+      headers: {
+        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
+        Accept: 'application/json'
+      }
+    });
+
+    const allocation = allocRes.data.data.find(a => !a.attributes.assigned);
+    if (!allocation) throw new Error('No free allocation found.');
+
+    const serverPort = allocation.attributes.port;
+    const serverAddress = `mc.goosehosting.com:${serverPort}`;
+
+    console.log('🌐 Server Address:', serverAddress);
+
+    // Determine server jar based on server type
+    let serverJar = 'server.jar';
+    let buildNumber = 'latest';
+    
+    switch (serverType) {
+      case 'paper':
+        serverJar = 'server.jar';
+        buildNumber = 'latest';
+        break;
+      case 'spigot':
+        serverJar = 'spigot.jar';
+        buildNumber = 'latest';
+        break;
+      case 'fabric':
+        serverJar = 'fabric-server-launch.jar';
+        buildNumber = 'latest';
+        break;
+      case 'forge':
+        serverJar = 'forge-server.jar';
+        buildNumber = 'latest';
+        break;
+      case 'vanilla':
+        serverJar = 'server.jar';
+        buildNumber = 'latest';
+        break;
+      default:
+        serverJar = 'server.jar';
+        buildNumber = 'latest';
     }
-});
 
-//defining port   
-const PORT = process.env.PORT || 3001;
+    // Create the server with proper environment variables
+    const serverData = {
+      name: serverName,
+      user: config.userId,
+      egg: config.eggId,
+      docker_image: config.dockerImage,
+      startup: config.startup,
+      environment: {
+        SERVER_JARFILE: serverJar,
+        BUILD_NUMBER: buildNumber,
+        VERSION: minecraftVersion,
+        VANILLA_VERSION: minecraftVersion,
+        SERVER_MEMORY: totalRam * 1024, // Convert GB to MB
+        MAX_PLAYERS: maxPlayers,
+        VIEW_DISTANCE: viewDistance,
+        WHITE_LIST: enableWhitelist,
+        PVP: enablePvp,
+        DIFFICULTY: 'normal',
+        GAMEMODE: 'survival',
+        LEVEL_TYPE: 'default',
+        SPAWN_PROTECTION: '16',
+        ALLOW_NETHER: 'true',
+        ENABLE_COMMAND_BLOCK: 'false',
+        SPAWN_ANIMALS: 'true',
+        SPAWN_MONSTERS: 'true',
+        GENERATE_STRUCTURES: 'true'
+      },
+      limits: {
+        memory: totalRam * 1024, // Convert GB to MB
+        swap: 0,
+        disk: Math.max(5000, totalRam * 1000), // 5GB minimum, or 1GB per GB of RAM
+        io: 500,
+        cpu: 0 // 0 = unlimited
+      },
+      feature_limits: {
+        databases: planId === 'starter' ? 1 : planId === 'pro' ? 2 : 5,
+        allocations: 1,
+        backups: planId === 'starter' ? 3 : planId === 'pro' ? 10 : 25
+      },
+      allocation: {
+        default: allocation.attributes.id
+      }
+    };
 
-/* ======================
-   SERVER STARTUP
-   ====================== */
+    console.log('🚀 Creating Pterodactyl server with data:');
+    console.log(JSON.stringify(serverData, null, 2));
 
-app.listen(PORT, () => {
-    console.log('\n🦆 === GOOSE HOSTING BACKEND ===');
-    console.log(`🌐 Port: ${PORT}`);
-    // console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
-    // console.log(`💳 Stripe: ${process.env.STRIPE_SECRET_KEY ? 'Ready' : 'Disabled'}`);
-    // console.log(`🦅 Pterodactyl: ${PTERODACTYL_API_KEY ? 'Connected' : 'Disabled'}`);
-    // console.log(`🚦 Server Limit: ${MAX_SERVERS}`);
-    console.log('===============================\n');
-});
+    const response = await axios.post(`${PTERODACTYL_BASE}/servers`, serverData, {
+      headers: {
+        Authorization: `Bearer ${PTERODACTYL_API_KEY}`,
+        'Content-Type': 'application/json',
+        Accept: 'Application/vnd.pterodactyl.v1+json'
+      }
+    });
+
+    const serverId = response.data.attributes?.id;
+    const serverUuid = response.data.attributes?.uuid;
+
+    console.log('✅ Server created successfully!');
+    console.log('📦 Server Details:');
+    console.log('  • Server ID:', serverId);
+    console.log('  • Server UUID:', serverUuid);
+    console.log('  • Server Address:', serverAddress);
+    console.log('  • Name:', serverName);
+    console.log('  • User ID:', config.userId);
+    console.log('  • Allocation ID:', allocation.attributes.id);
+    console.log('  • Egg ID:', config.eggId);
+    console.log('  • Docker Image:', config.dockerImage);
+    console.log('==========================================');
+
+    // Update the Stripe session with ALL server details including credentials
+    await stripe.checkout.sessions.update(session.id, {
+      metadata: {
+        ...session.metadata,
+        serverId: String(serverId),
+        serverUuid: String(serverUuid),
+        serverAddress: serverAddress,
+        serverStatus: 'created',
+        // Add server credentials and connection info
+        serverUsername: credentials.username,
+        serverPassword: credentials.password,
+        panelUrl: `https://panel.goosehosting.com/server/${serverUuid}`,
+        ftpHost: 'ftp.goosehosting.com',
+        ftpPort: '21',
+        ftpUsername: credentials.username,
+        ftpPassword: credentials.password,
+        // Additional server info
+        serverPort: String(serverPort),
+        serverHost: 'mc.goosehosting.com',
+        pterodactylUserId: String(config.userId),
+        createdAt: new Date().toISOString()
+      }
+    });
+
+    console.log('📝 Updated Stripe session with complete server details including credentials');
+
+    // If plugins are selected and it's a supported server type, we could install them here
+    if (selectedPlugins.length > 0 && (serverType === 'paper' || serverType === 'spigot')) {
+      console.log('📦 Plugins to install:', selectedPlugins);
+      // Plugin installation would happen here via Pterodactyl file API
+      // This would require additional API calls to upload plugin files
+    }
+
+    return {
+      success: true,
+      serverId,
+      serverUuid,
+      serverName,
+      serverAddress,
+      credentials,
+      message: 'Server created successfully with credentials'
+    };
+
+  } catch (err) {
+    console.error('❌ Server creation failed:', {
+      error: err.message,
+      response: err.response?.data,
+      status: err.response?.status,
+      headers: err.response?.headers
+    });
+    
+    throw err;
+  }
+}
