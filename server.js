@@ -449,26 +449,52 @@ async function createPterodactylServer(session) {
     // STEP 8: Update Stripe session with all details
     if (session.id) {
       try {
-        await stripe.checkout.sessions.update(session.id, {
-          metadata: {
-            ...session.metadata,
-            serverId: serverId.toString(),
-            serverUuid: serverUuid,
-            serverAddress: serverAddress,
-            pterodactylUserId: userResult.userId.toString(),
-            pterodactylUsername: userResult.username,
-            ownerEmail: customerEmail,
-            userStatus: userResult.existing ? 'existing' : 'new',
-            serverStatus: 'created',
-            createdAt: new Date().toISOString(),
-            panelUrl: `${PTERODACTYL_BASE.replace('/api', '')}/server/${serverUuid}`,
-            ...credentials
-          }
+        const updatedMetadata = {
+          ...session.metadata,
+          serverId: serverId.toString(),
+          serverUuid: serverUuid,
+          serverAddress: serverAddress,
+          pterodactylUserId: userResult.userId.toString(),
+          pterodactylUsername: userResult.username,
+          ownerEmail: customerEmail,
+          userStatus: userResult.existing ? 'existing' : 'new',
+          serverStatus: 'created',
+          createdAt: new Date().toISOString(),
+          panelUrl: `${PTERODACTYL_BASE.replace('/api', '')}/server/${serverUuid}`,
+          ...credentials
+        };
+        
+        console.log(`${logPrefix} 📝 Updating Stripe session with metadata:`, {
+          sessionId: session.id,
+          pterodactylUserId: updatedMetadata.pterodactylUserId,
+          pterodactylUsername: updatedMetadata.pterodactylUsername,
+          serverStatus: updatedMetadata.serverStatus
         });
-        console.log(`${logPrefix} ✅ Stripe session updated with server details`);
+        
+        await stripe.checkout.sessions.update(session.id, {
+          metadata: updatedMetadata
+        });
+        
+        console.log(`${logPrefix} ✅ Stripe session updated successfully`);
+        
+        // Verify the update worked
+        const verifySession = await stripe.checkout.sessions.retrieve(session.id);
+        console.log(`${logPrefix} 🔍 Verification - Updated metadata contains:`, {
+          pterodactylUserId: verifySession.metadata?.pterodactylUserId,
+          pterodactylUsername: verifySession.metadata?.pterodactylUsername,
+          serverStatus: verifySession.metadata?.serverStatus
+        });
+        
       } catch (stripeError) {
-        console.error(`${logPrefix} ⚠️ Failed to update Stripe session:`, stripeError.message);
+        console.error(`${logPrefix} ❌ Failed to update Stripe session:`, {
+          error: stripeError.message,
+          sessionId: session.id,
+          userResult: userResult
+        });
+        // Don't fail the entire process for this
       }
+    } else {
+      console.error(`${logPrefix} ⚠️ No session ID provided - cannot update metadata`);
     }
     
     return {
@@ -599,7 +625,56 @@ app.get('/debug/server-ownership/:serverId', async (req, res) => {
   }
 });
 
-// 5. Health Check
+// 6. Debug: Manually trigger server creation for a session
+app.post('/debug/create-server-for-session', async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId is required' });
+    }
+    
+    console.log(`🧪 Manually triggering server creation for session: ${sessionId}`);
+    
+    // Retrieve the session
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ['customer']
+    });
+    
+    console.log(`📋 Session before server creation:`, {
+      id: session.id,
+      email: session.customer_details?.email,
+      metadata: session.metadata
+    });
+    
+    // Create the server
+    const result = await createPterodactylServer(session);
+    
+    // Retrieve the session again to see updated metadata
+    const updatedSession = await stripe.checkout.sessions.retrieve(sessionId);
+    
+    console.log(`📋 Session after server creation:`, {
+      id: updatedSession.id,
+      metadata: updatedSession.metadata
+    });
+    
+    res.json({
+      success: true,
+      serverResult: result,
+      sessionMetadata: updatedSession.metadata
+    });
+    
+  } catch (error) {
+    console.error('❌ Manual server creation failed:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: error.response?.data 
+    });
+  }
+});
+
+// 7. Health Check
 app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
@@ -607,8 +682,6 @@ app.get('/health', (req, res) => {
     environment: process.env.NODE_ENV || 'development'
   });
 });
-
-// === MAIN APPLICATION ROUTES ===
 
 // Stripe webhook endpoint
 app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req, res) => {
@@ -639,15 +712,24 @@ app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req,
   }
 });
 
-// Get session details endpoint
+// Get session details endpoint with enhanced debugging
 app.get('/session-details/:sessionId', async (req, res) => {
   try {
     const sessionId = req.params.sessionId;
+    console.log(`🔍 Retrieving session details for: ${sessionId}`);
+    
     const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ['customer']
     });
     
-    res.json({
+    console.log(`📋 Session metadata:`, JSON.stringify(session.metadata, null, 2));
+    console.log(`📧 Customer email sources:`, {
+      customer_details_email: session.customer_details?.email,
+      customer_email: session.customer?.email,
+      metadata_email: session.metadata?.customerEmail || session.metadata?.ownerEmail
+    });
+    
+    const sessionData = {
       id: session.id,
       customerEmail: session.customer_details?.email || session.customer?.email,
       amountTotal: session.amount_total,
@@ -655,7 +737,10 @@ app.get('/session-details/:sessionId', async (req, res) => {
       paymentStatus: session.payment_status,
       metadata: session.metadata || {},
       createdAt: new Date(session.created * 1000).toISOString()
-    });
+    };
+    
+    console.log(`📤 Returning session data:`, JSON.stringify(sessionData, null, 2));
+    res.json(sessionData);
   } catch (error) {
     console.error('❌ Failed to retrieve session:', error.message);
     res.status(500).json({ error: 'Failed to retrieve session details' });
@@ -726,6 +811,7 @@ app.listen(PORT, () => {
   console.log('  POST /debug/test-user-creation - Test user creation');
   console.log('  GET  /debug/test-server-limits - Test server limits');
   console.log('  GET  /debug/server-ownership/:id - Debug server ownership');
+  console.log('  POST /debug/create-server-for-session - Manually create server');
   console.log('  GET  /health - Health check');
 });
 
