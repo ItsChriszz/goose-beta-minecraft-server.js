@@ -1,7 +1,8 @@
-// server.js - SIMPLIFIED: User creation only
+// server.js - Combined User Creation + Server Management
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const app = express();
 
@@ -22,22 +23,51 @@ app.use((req, res, next) => {
 });
 
 // Environment validation
-if (!process.env.PTERODACTYL_API_URL || !process.env.PTERODACTYL_API_KEY) {
-  console.error('❌ Missing PTERODACTYL_API_URL or PTERODACTYL_API_KEY');
-  process.exit(1);
-}
+const validateEnvVars = () => {
+  const requiredVars = [
+    'PTERODACTYL_API_URL',
+    'PTERODACTYL_API_KEY'
+  ];
+  
+  const optionalVars = [
+    'STRIPE_SECRET_KEY',
+    'MaxServersPerNode',
+    'PTERODACTYL_NODE_ID',
+    'PTERODACTYL_EGG_ID'
+  ];
+  
+  const missingRequired = requiredVars.filter(varName => !process.env[varName]);
+  if (missingRequired.length > 0) {
+    console.error('❌ Missing required environment variables:', missingRequired.join(', '));
+    process.exit(1);
+  }
+  
+  const missingOptional = optionalVars.filter(varName => !process.env[varName]);
+  if (missingOptional.length > 0) {
+    console.warn('⚠️ Missing optional environment variables (server creation disabled):', missingOptional.join(', '));
+  }
+};
+
+validateEnvVars();
 
 console.log('🔧 Environment loaded:');
 console.log(`📍 Panel URL: ${process.env.PTERODACTYL_API_URL}`);
 console.log(`🔑 API Key: ${process.env.PTERODACTYL_API_KEY.substring(0, 15)}...`);
+console.log(`💳 Stripe: ${process.env.STRIPE_SECRET_KEY ? '✅ Configured' : '❌ Not configured'}`);
+
+// Pterodactyl configuration
+const PTERODACTYL_BASE = process.env.PTERODACTYL_API_URL;
+const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
+const MaxServersPerNode = parseInt(process.env.MaxServersPerNode) || 50;
+const nodeId = process.env.PTERODACTYL_NODE_ID;
 
 // Helper function for Pterodactyl API requests
 const pterodactylRequest = async (method, endpoint, data = null) => {
   const config = {
     method,
-    url: `${process.env.PTERODACTYL_API_URL}${endpoint}`,
+    url: `${PTERODACTYL_BASE}${endpoint}`,
     headers: {
-      'Authorization': `Bearer ${process.env.PTERODACTYL_API_KEY}`,
+      'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
       'Accept': 'application/json',
       'Content-Type': 'application/json'
     },
@@ -108,7 +138,7 @@ function generateRandomPassword(length = 16) {
   return password.split('').sort(() => 0.5 - Math.random()).join('');
 }
 
-// MAIN FUNCTION: Create User
+// MAIN FUNCTION: Create User (Updated from working version)
 const CreateUser = async (email) => {
   // Validate and normalize email
   if (!email || typeof email !== 'string') {
@@ -125,12 +155,12 @@ const CreateUser = async (email) => {
     console.log(`Starting user creation for: ${email}`);
 
     // 1. Check for existing user
-    const searchUrl = `${process.env.PTERODACTYL_API_URL}/users?filter[email]=${encodeURIComponent(email)}`;
+    const searchUrl = `${PTERODACTYL_BASE}/users?filter[email]=${encodeURIComponent(email)}`;
     console.log(`Checking existing user at: ${searchUrl}`);
     
     const searchResponse = await axios.get(searchUrl, {
       headers: {
-        'Authorization': `Bearer ${process.env.PTERODACTYL_API_KEY}`,
+        'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
         'Accept': 'application/json'
       },
       timeout: 5000
@@ -155,7 +185,7 @@ const CreateUser = async (email) => {
     console.log(`Generated credentials - Username: ${username}, Password: ${password.replace(/./g, '*')}`);
 
     // 3. Create new user
-    const createUrl = `${process.env.PTERODACTYL_API_URL}/users`;
+    const createUrl = `${PTERODACTYL_BASE}/users`;
     const userData = {
       email: email,
       username: username,
@@ -169,7 +199,7 @@ const CreateUser = async (email) => {
     console.log(`Creating user at: ${createUrl}`);
     const createResponse = await axios.post(createUrl, userData, {
       headers: {
-        'Authorization': `Bearer ${process.env.PTERODACTYL_API_KEY}`,
+        'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
@@ -201,7 +231,7 @@ const CreateUser = async (email) => {
 
     // Handle specific error cases
     if (error.response?.status === 404) {
-      throw new Error(`API endpoint not found (404) - check your PTERODACTYL_API_URL (currently: ${process.env.PTERODACTYL_API_URL})`);
+      throw new Error(`API endpoint not found (404) - check your PTERODACTYL_API_URL (currently: ${PTERODACTYL_BASE})`);
     }
     
     if (error.response?.status === 422) {
@@ -210,10 +240,10 @@ const CreateUser = async (email) => {
         // If user exists due to race condition, try fetching again
         try {
           const retryResponse = await axios.get(
-            `${process.env.PTERODACTYL_API_URL}/users?filter[email]=${encodeURIComponent(email)}`,
+            `${PTERODACTYL_BASE}/users?filter[email]=${encodeURIComponent(email)}`,
             {
               headers: {
-                'Authorization': `Bearer ${process.env.PTERODACTYL_API_KEY}`,
+                'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
                 'Accept': 'application/json'
               }
             }
@@ -245,6 +275,212 @@ const CreateUser = async (email) => {
   }
 };
 
+// Assign User to Server function
+const AssignUserToServer = async (serverId, userId, email) => {
+  if (!serverId || !email) {
+    throw new Error('serverId and email are required');
+  }
+
+  try {
+    console.log(`🔗 Assigning user to server ${serverId}`);
+    
+    const response = await pterodactylRequest('POST', `/servers/${serverId}/users`, {
+      email: email,
+      permissions: [
+        "control.console",
+        "control.start",
+        "control.stop",
+        "control.restart",
+        "file.create",
+        "file.read",
+        "file.update",
+        "file.delete",
+        "file.archive",
+        "file.sftp"
+      ]
+    });
+    
+    console.log("✅ User assigned to server successfully");
+    return { success: true, data: response.data };
+    
+  } catch (error) {
+    console.error("❌ Assignment error:", {
+      message: error.message,
+      response: error.response?.data,
+      status: error.response?.status
+    });
+    
+    // Handle case where user is already assigned
+    if (error.response?.status === 422 && 
+        error.response?.data?.errors?.[0]?.detail?.includes('already assigned')) {
+      return { success: true, message: 'User already assigned to server' };
+    }
+    
+    throw new Error(`Failed to assign user to server: ${error.message}`);
+  }
+};
+
+// Server limit checking middleware
+const checkServerLimits = async (req, res, next) => {
+  if (!nodeId) {
+    console.warn('⚠️ Node ID not configured, skipping server limit check');
+    return next();
+  }
+
+  try {
+    console.log(`🔄 Checking server limits on node ${nodeId}`);
+    
+    const response = await pterodactylRequest('GET', `/nodes/${nodeId}/servers`);
+    
+    const currentServers = response.data.data.length;
+    console.log(`📊 Current servers: ${currentServers}/${MaxServersPerNode}`);
+    
+    if (currentServers >= MaxServersPerNode) {
+      console.error(`🚨 Server limit reached (${currentServers}/${MaxServersPerNode})`);
+      return res.status(429).json({ 
+        error: 'Server limit reached',
+        current: currentServers,
+        max: MaxServersPerNode
+      });
+    }
+    
+    next();
+  } catch (err) {
+    console.error('❌ Server limit check failed:', err.message);
+    return res.status(500).json({ 
+      error: 'Internal server error during limit validation',
+      details: err.message
+    });
+  }
+};
+
+// Create Pterodactyl Server function
+async function createPterodactylServer(session) {
+  if (!process.env.STRIPE_SECRET_KEY || !nodeId || !process.env.PTERODACTYL_EGG_ID) {
+    throw new Error('Server creation requires STRIPE_SECRET_KEY, PTERODACTYL_NODE_ID, and PTERODACTYL_EGG_ID');
+  }
+
+  try {
+    console.log('🚀 Starting server creation process');
+    
+    // Validate session
+    if (!session || typeof session !== 'object') {
+      throw new Error('Invalid session data');
+    }
+    
+    // Get customer email with proper validation
+    const customerEmail = session.customer_details?.email || 
+                        session.customer_email || 
+                        session.metadata?.customerEmail ||
+                        session.customer?.email;
+    
+    if (!customerEmail || !customerEmail.includes('@')) {
+      throw new Error('Valid customer email is required');
+    }
+    
+    console.log('📧 Using customer email:', customerEmail);
+    
+    // STEP 1: Create or find user
+    const userResult = await CreateUser(customerEmail);
+    console.log('👤 User result:', {
+      id: userResult.userId,
+      username: userResult.username,
+      existing: userResult.existing
+    });
+    
+    // STEP 2: Extract server settings from session metadata
+    const serverName = session.metadata?.serverName || `Server-${Date.now()}`;
+    const totalRam = parseInt(session.metadata?.totalRam) || 4;
+    
+    // STEP 3: Get available allocation
+    const allocRes = await pterodactylRequest('GET', `/nodes/${nodeId}/allocations`);
+    
+    const allocation = allocRes.data.data.find(a => !a.attributes.assigned);
+    if (!allocation) throw new Error('No available server ports');
+    
+    // STEP 4: Create server
+    const serverData = {
+      name: serverName,
+      user: parseInt(userResult.userId), // This makes the user the owner
+      egg: parseInt(process.env.PTERODACTYL_EGG_ID),
+      docker_image: 'ghcr.io/pterodactyl/yolks:java_17',
+      startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}',
+      environment: {
+        SERVER_JARFILE: 'server.jar',
+        SERVER_MEMORY: totalRam * 1024,
+        MAX_PLAYERS: 20,
+        EULA: 'true'
+      },
+      limits: {
+        memory: totalRam * 1024,
+        swap: 0,
+        disk: totalRam * 1000,
+        io: 500,
+        cpu: 0
+      },
+      feature_limits: {
+        databases: 1,
+        allocations: 1,
+        backups: 3
+      },
+      allocation: {
+        default: allocation.attributes.id
+      }
+    };
+    
+    console.log('🛠️ Creating server with config:', JSON.stringify(serverData, null, 2));
+    
+    const response = await pterodactylRequest('POST', '/servers', serverData);
+    
+    const serverId = response.data.attributes.id;
+    const serverUuid = response.data.attributes.uuid;
+    const serverAddress = `mc.example.com:${allocation.attributes.port}`;
+    
+    console.log('🎉 Server created successfully:', {
+      id: serverId,
+      uuid: serverUuid,
+      address: serverAddress,
+      owner: userResult.userId
+    });
+    
+    // STEP 5: Update Stripe session with server details
+    if (session.id && process.env.STRIPE_SECRET_KEY) {
+      await stripe.checkout.sessions.update(session.id, {
+        metadata: {
+          ...session.metadata,
+          serverId: serverId,
+          serverUuid: serverUuid,
+          serverAddress: serverAddress,
+          pterodactylUserId: userResult.userId,
+          ownerEmail: customerEmail,
+          createdAt: new Date().toISOString()
+        }
+      });
+    }
+    
+    return {
+      success: true,
+      serverId,
+      serverUuid,
+      serverAddress,
+      user: {
+        id: userResult.userId,
+        email: customerEmail,
+        username: userResult.username
+      }
+    };
+    
+  } catch (err) {
+    console.error('❌ Server creation failed:', {
+      message: err.message,
+      stack: err.stack,
+      response: err.response?.data
+    });
+    
+    throw err;
+  }
+}
+
 // === ROUTES ===
 
 // Debug environment variables
@@ -252,12 +488,16 @@ app.get('/debug/env', (req, res) => {
   const env = {
     PTERODACTYL_API_URL: process.env.PTERODACTYL_API_URL,
     PTERODACTYL_API_KEY: process.env.PTERODACTYL_API_KEY ? `${process.env.PTERODACTYL_API_KEY.substring(0, 15)}...` : 'NOT SET',
+    STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY ? 'CONFIGURED' : 'NOT SET',
+    PTERODACTYL_NODE_ID: process.env.PTERODACTYL_NODE_ID || 'NOT SET',
+    PTERODACTYL_EGG_ID: process.env.PTERODACTYL_EGG_ID || 'NOT SET',
+    MaxServersPerNode: MaxServersPerNode,
     NODE_ENV: process.env.NODE_ENV || 'not set'
   };
   
   res.json({
     environment: env,
-    status: 'Using PTERODACTYL_API_URL variable'
+    status: 'Combined user creation + server management service'
   });
 });
 
@@ -294,6 +534,71 @@ app.post('/create-user', async (req, res) => {
     
   } catch (error) {
     console.error('❌ API Error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Create server endpoint
+app.post('/create-server', checkServerLimits, async (req, res) => {
+  try {
+    const { sessionData } = req.body;
+    
+    if (!sessionData) {
+      return res.status(400).json({ error: 'Session data is required' });
+    }
+    
+    console.log(`\n🎯 API Request: Create server for session`);
+    
+    const result = await createPterodactylServer(sessionData);
+    
+    console.log(`🎉 API Response: Server creation result:`, result);
+    
+    res.json({
+      success: true,
+      message: 'Server created successfully',
+      server: {
+        id: result.serverId,
+        uuid: result.serverUuid,
+        address: result.serverAddress
+      },
+      user: result.user
+    });
+    
+  } catch (error) {
+    console.error('❌ Server creation error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Assign user to server endpoint
+app.post('/assign-user', async (req, res) => {
+  try {
+    const { serverId, userId, email } = req.body;
+    
+    if (!serverId || !email) {
+      return res.status(400).json({ error: 'serverId and email are required' });
+    }
+    
+    console.log(`\n🎯 API Request: Assign user ${email} to server ${serverId}`);
+    
+    const result = await AssignUserToServer(serverId, userId, email);
+    
+    console.log(`🎉 API Response: User assignment result:`, result);
+    
+    res.json({
+      success: true,
+      message: 'User assigned to server successfully',
+      result: result
+    });
+    
+  } catch (error) {
+    console.error('❌ User assignment error:', error.message);
     res.status(500).json({
       success: false,
       error: error.message
@@ -390,23 +695,41 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
-    service: 'user-creation-only'
+    service: 'combined-user-server-management'
   });
 });
 
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`\n🚀 User Creation Server running on port ${PORT}`);
+  console.log(`\n🚀 Combined User & Server Management Service running on port ${PORT}`);
   console.log('📍 Available endpoints:');
   console.log('  GET  /debug/env - Check environment variables');
   console.log('  POST /create-user - Create a new user');
+  console.log('  POST /create-server - Create a server (requires additional env vars)');
+  console.log('  POST /assign-user - Assign user to server');
   console.log('  GET  /users - List all users');
   console.log('  POST /search-user - Search user by email');
   console.log('  GET  /test-api - Test API connectivity');
   console.log('  GET  /health - Health check');
-  console.log('\n🧪 Test with:');
+  console.log('\n🧪 Test user creation with:');
   console.log(`  curl -X POST http://localhost:${PORT}/create-user -H "Content-Type: application/json" -d '{"email":"test@example.com"}'`);
+  
+  if (!process.env.STRIPE_SECRET_KEY || !nodeId || !process.env.PTERODACTYL_EGG_ID) {
+    console.log('\n⚠️ Server creation disabled - missing environment variables:');
+    if (!process.env.STRIPE_SECRET_KEY) console.log('  - STRIPE_SECRET_KEY');
+    if (!nodeId) console.log('  - PTERODACTYL_NODE_ID');
+    if (!process.env.PTERODACTYL_EGG_ID) console.log('  - PTERODACTYL_EGG_ID');
+  } else {
+    console.log('\n✅ Server creation enabled');
+  }
 });
 
-module.exports = { app, CreateUser };
+module.exports = { 
+  app, 
+  CreateUser, 
+  createPterodactylServer, 
+  AssignUserToServer, 
+  checkServerLimits,
+  generateRandomPassword 
+};
