@@ -408,8 +408,16 @@ async function createPterodactylServer(session) {
     // STEP 3: Get available allocation
     const allocRes = await pterodactylRequest('GET', `/nodes/${nodeId}/allocations`);
     
-    const allocation = allocRes.data.data.find(a => !a.attributes.assigned);
-    if (!allocation) throw new Error('No available server ports');
+    const availableAllocations = allocRes.data.data.filter(a => !a.attributes.assigned);
+    console.log(`📊 Found ${availableAllocations.length} available allocations`);
+    
+    if (availableAllocations.length === 0) {
+      throw new Error('No available server ports on this node');
+    }
+    
+    const allocation = availableAllocations[0];
+    console.log(`🎯 Using allocation: ${allocation.attributes.id} (${allocation.attributes.ip}:${allocation.attributes.port})`);
+    
     
     // STEP 4: Create server
     const serverData = {
@@ -443,21 +451,42 @@ async function createPterodactylServer(session) {
     
     console.log('🛠️ Creating server with config:', JSON.stringify(serverData, null, 2));
     
-    const response = await axios.post(
-      `${PTERODACTYL_BASE}/servers`, 
-      serverData, 
-      {
-        headers: {
-          'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
-          'Content-Type': 'application/json',
-          'Accept': 'Application/vnd.pterodactyl.v1+json'
+    try {
+      const response = await axios.post(
+        `${PTERODACTYL_BASE}/servers`, 
+        serverData, 
+        {
+          headers: {
+            'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
+            'Content-Type': 'application/json',
+            'Accept': 'Application/vnd.pterodactyl.v1+json'
+          }
         }
-      }
-    );
-    
-    const serverId = response.data.attributes.id;
-    const serverUuid = response.data.attributes.uuid;
-    const serverAddress = `mc.example.com:${allocation.attributes.port}`;
+      );
+      
+      const serverId = response.data.attributes.id;
+      const serverUuid = response.data.attributes.uuid;
+      const serverAddress = `mc.example.com:${allocation.attributes.port}`;
+      
+      console.log('🎉 Server created successfully:', {
+        id: serverId,
+        uuid: serverUuid,
+        address: serverAddress,
+        owner: userResult.userId
+      });
+      
+      // Continue with rest of function...
+      
+    } catch (serverError) {
+      console.error('❌ Detailed server creation error:', {
+        message: serverError.message,
+        status: serverError.response?.status,
+        statusText: serverError.response?.statusText,
+        errors: serverError.response?.data?.errors,
+        fullResponse: JSON.stringify(serverError.response?.data, null, 2)
+      });
+      throw serverError;
+    }
     
     console.log('🎉 Server created successfully:', {
       id: serverId,
@@ -497,7 +526,10 @@ async function createPterodactylServer(session) {
     console.error('❌ Server creation failed:', {
       message: err.message,
       stack: err.stack,
-      response: err.response?.data
+      status: err.response?.status,
+      statusText: err.response?.statusText,
+      data: err.response?.data,
+      errors: err.response?.data?.errors
     });
     
     throw err;
@@ -518,9 +550,15 @@ app.get('/debug/env', (req, res) => {
     NODE_ENV: process.env.NODE_ENV || 'not set'
   };
   
+  const missingForServerCreation = [];
+  if (!process.env.PTERODACTYL_NODE_ID) missingForServerCreation.push('PTERODACTYL_NODE_ID');
+  if (!process.env.PTERODACTYL_EGG_ID) missingForServerCreation.push('PTERODACTYL_EGG_ID');
+  
   res.json({
     environment: env,
-    status: 'Combined user creation + server management service'
+    status: 'Combined user creation + server management service',
+    serverCreationEnabled: missingForServerCreation.length === 0,
+    missingForServerCreation: missingForServerCreation
   });
 });
 
