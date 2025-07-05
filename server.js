@@ -22,20 +22,20 @@ app.use((req, res, next) => {
 });
 
 // Environment validation with YOUR actual variable names
-if (!process.env.PTERODACTYL_URL || !process.env.PTERODACTYL_API_KEY) {
-  console.error('❌ Missing PTERODACTYL_URL or PTERODACTYL_API_KEY');
+if (!process.env.PTERODACTYL_API_URL || !process.env.PTERODACTYL_API_KEY) {
+  console.error('❌ Missing PTERODACTYL_API_URL or PTERODACTYL_API_KEY');
   process.exit(1);
 }
 
 console.log('🔧 Environment loaded:');
-console.log(`📍 Panel URL: ${process.env.PTERODACTYL_URL}`);
+console.log(`📍 Panel URL: ${process.env.PTERODACTYL_API_URL}`);
 console.log(`🔑 API Key: ${process.env.PTERODACTYL_API_KEY.substring(0, 15)}...`);
 
 // Helper function for Pterodactyl API requests
 const pterodactylRequest = async (method, endpoint, data = null) => {
   const config = {
     method,
-    url: `${process.env.PTERODACTYL_URL}/api/application${endpoint}`,
+    url: `${process.env.PTERODACTYL_API_URL}${endpoint}`,
     headers: {
       'Authorization': `Bearer ${process.env.PTERODACTYL_API_KEY}`,
       'Accept': 'application/json',
@@ -126,7 +126,7 @@ const CreateUser = async (email) => {
     console.log(`Starting user creation for: ${email}`);
 
     // 1. Check for existing user
-    const searchUrl = `${process.env.PTERODACTYL_URL}/api/application/users?filter[email]=${encodeURIComponent(email)}`;
+    const searchUrl = `${process.env.PTERODACTYL_API_URL}/users?filter[email]=${encodeURIComponent(email)}`;
     console.log(`Checking existing user at: ${searchUrl}`);
     
     const searchResponse = await axios.get(searchUrl, {
@@ -156,7 +156,7 @@ const CreateUser = async (email) => {
     console.log(`Generated credentials - Username: ${username}, Password: ${password.replace(/./g, '*')}`);
 
     // 3. Create new user
-    const createUrl = `${process.env.PTERODACTYL_URL}/api/application/users`;
+    const createUrl = `${process.env.PTERODACTYL_API_URL}/users`;
     const userData = {
       email: email,
       username: username,
@@ -202,7 +202,7 @@ const CreateUser = async (email) => {
 
     // Handle specific error cases
     if (error.response?.status === 404) {
-      throw new Error(`API endpoint not found (404) - check your PTERODACTYL_URL (currently: ${process.env.PTERODACTYL_URL})`);
+      throw new Error(`API endpoint not found (404) - check your PTERODACTYL_API_URL (currently: ${process.env.PTERODACTYL_API_URL})`);
     }
     
     if (error.response?.status === 422) {
@@ -211,7 +211,7 @@ const CreateUser = async (email) => {
         // If user exists due to race condition, try fetching again
         try {
           const retryResponse = await axios.get(
-            `${process.env.PTERODACTYL_URL}/api/application/users?filter[email]=${encodeURIComponent(email)}`,
+            `${process.env.PTERODACTYL_API_URL}/users?filter[email]=${encodeURIComponent(email)}`,
             {
               headers: {
                 'Authorization': `Bearer ${process.env.PTERODACTYL_API_KEY}`,
@@ -251,14 +251,14 @@ const CreateUser = async (email) => {
 // Debug environment variables
 app.get('/debug/env', (req, res) => {
   const env = {
-    PTERODACTYL_URL: process.env.PTERODACTYL_URL,
+    PTERODACTYL_API_URL: process.env.PTERODACTYL_API_URL,
     PTERODACTYL_API_KEY: process.env.PTERODACTYL_API_KEY ? `${process.env.PTERODACTYL_API_KEY.substring(0, 15)}...` : 'NOT SET',
     NODE_ENV: process.env.NODE_ENV || 'not set'
   };
   
   res.json({
     environment: env,
-    status: 'Using PTERODACTYL_URL variable'
+    status: 'Using PTERODACTYL_API_URL variable'
   });
 });
 
