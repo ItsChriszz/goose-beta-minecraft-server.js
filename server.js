@@ -130,7 +130,12 @@ const CreateUser = async (email) => {
     
     console.log(`${logPrefix} 📊 Search response:`, {
       status: searchResponse.status,
-      userCount: searchResponse.data.data.length
+      userCount: searchResponse.data.data.length,
+      users: searchResponse.data.data.map(u => ({
+        id: u.attributes.id,
+        email: u.attributes.email,
+        username: u.attributes.username
+      }))
     });
     
     if (searchResponse.data.data.length > 0) {
@@ -303,11 +308,21 @@ async function createPterodactylServer(session) {
     
     // STEP 2: Create or find user
     const userResult = await CreateUser(customerEmail);
-    console.log(`${logPrefix} 👤 User result:`, {
-      id: userResult.userId,
+    console.log(`${logPrefix} 👤 User creation result:`, {
+      success: userResult.success,
+      userId: userResult.userId,
       username: userResult.username,
-      existing: userResult.existing
+      email: userResult.email,
+      existing: userResult.existing,
+      password: userResult.password ? '[HIDDEN]' : 'NO_PASSWORD'
     });
+    
+    // CRITICAL: Verify the user ID is not 1 (admin)
+    if (userResult.userId === 1) {
+      console.error(`${logPrefix} ⚠️ WARNING: User ID is 1 (admin)! This should not happen.`);
+      console.error(`${logPrefix} 📧 Email used for user creation: ${customerEmail}`);
+      throw new Error('User creation returned admin user ID - this indicates a problem');
+    }
     
     // STEP 3: Get available allocation
     const allocation = await getAvailableAllocation(nodeId);
@@ -674,13 +689,68 @@ app.post('/debug/create-server-for-session', async (req, res) => {
   }
 });
 
-// 7. Health Check
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
-  });
+// 8. Debug: Check Pterodactyl users
+app.get('/debug/pterodactyl-users', async (req, res) => {
+  try {
+    console.log('🔍 Fetching all Pterodactyl users...');
+    
+    const response = await pterodactylRequest('GET', '/users');
+    const users = response.data.data.map(user => ({
+      id: user.attributes.id,
+      email: user.attributes.email,
+      username: user.attributes.username,
+      first_name: user.attributes.first_name,
+      last_name: user.attributes.last_name,
+      root_admin: user.attributes.root_admin,
+      created_at: user.attributes.created_at
+    }));
+    
+    console.log('📋 Found users:', users);
+    
+    res.json({
+      success: true,
+      userCount: users.length,
+      users: users
+    });
+  } catch (error) {
+    console.error('❌ Failed to fetch users:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 9. Debug: Search for specific user by email
+app.post('/debug/search-user-by-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    console.log(`🔍 Searching for user with email: ${email}`);
+    
+    const searchUrl = `/users?filter[email]=${encodeURIComponent(email)}`;
+    console.log(`🔗 Search URL: ${searchUrl}`);
+    
+    const response = await pterodactylRequest('GET', searchUrl);
+    const users = response.data.data.map(user => ({
+      id: user.attributes.id,
+      email: user.attributes.email,
+      username: user.attributes.username,
+      root_admin: user.attributes.root_admin
+    }));
+    
+    console.log(`📋 Search results for ${email}:`, users);
+    
+    res.json({
+      success: true,
+      searchEmail: email,
+      userCount: users.length,
+      users: users
+    });
+  } catch (error) {
+    console.error('❌ User search failed:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // Stripe webhook endpoint
@@ -690,18 +760,54 @@ app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req,
   try {
     const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
     
-    console.log('📥 Received Stripe webhook:', event.type);
+    console.log('🔔 Received Stripe webhook:', event.type);
+    console.log('📋 Event data keys:', Object.keys(event.data.object));
     
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       console.log('💳 Checkout session completed:', session.id);
+      console.log('📧 Customer email from session:', session.customer_details?.email);
+      console.log('📦 Session metadata:', JSON.stringify(session.metadata, null, 2));
       
       try {
+        console.log('🚀 Starting server creation from webhook...');
         const serverResult = await createPterodactylServer(session);
-        console.log('✅ Server creation successful:', serverResult.serverId);
+        console.log('✅ Server creation successful from webhook:', {
+          serverId: serverResult.serverId,
+          userId: serverResult.user.id,
+          username: serverResult.user.username
+        });
       } catch (serverError) {
-        console.error('❌ Server creation failed:', serverError.message);
-        // You might want to send an email or notification here
+        console.error('❌ Server creation failed in webhook:', serverError.message);
+        console.error('📋 Server error details:', serverError);
+      }
+    }
+    
+    if (event.type === 'invoice.payment_succeeded') {
+      const invoice = event.data.object;
+      console.log('💸 Payment succeeded for:', invoice.id);
+      
+      // Get the subscription to find the checkout session
+      try {
+        const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
+        console.log('📋 Subscription metadata:', subscription.metadata);
+        
+        // If we have a session ID in subscription metadata, process it
+        if (subscription.metadata?.sessionId) {
+          const session = await stripe.checkout.sessions.retrieve(subscription.metadata.sessionId);
+          console.log('🔄 Processing server creation from invoice webhook...');
+          
+          const serverResult = await createPterodactylServer(session);
+          console.log('✅ Server creation successful from invoice:', {
+            serverId: serverResult.serverId,
+            userId: serverResult.user.id,
+            username: serverResult.user.username
+          });
+        } else {
+          console.log('⚠️ No session ID found in subscription metadata');
+        }
+      } catch (subError) {
+        console.error('❌ Failed to process invoice webhook:', subError.message);
       }
     }
     
@@ -812,6 +918,8 @@ app.listen(PORT, () => {
   console.log('  GET  /debug/test-server-limits - Test server limits');
   console.log('  GET  /debug/server-ownership/:id - Debug server ownership');
   console.log('  POST /debug/create-server-for-session - Manually create server');
+  console.log('  GET  /debug/pterodactyl-users - List all Pterodactyl users');
+  console.log('  POST /debug/search-user-by-email - Search user by email');
   console.log('  GET  /health - Health check');
 });
 
