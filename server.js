@@ -561,9 +561,14 @@ app.post('/create-checkout-session', async (req, res) => {
       return res.status(500).json({ error: 'Stripe not configured' });
     }
 
+    console.log('📥 Received request body:', JSON.stringify(req.body, null, 2));
+
+    // Handle nested serverConfig structure
+    const serverConfig = req.body.serverConfig || req.body;
+    const planId = req.body.planId || req.body.plan;
+
     const { 
       serverName, 
-      plan, 
       serverType, 
       minecraftVersion, 
       totalRam, 
@@ -573,12 +578,24 @@ app.post('/create-checkout-session', async (req, res) => {
       pvp, 
       plugins,
       totalCost 
-    } = req.body;
+    } = serverConfig;
+
+    const plan = planId;
+
+    // Validate required fields
+    if (!serverName || !plan || !totalCost) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: serverName, plan, and totalCost are required',
+        received: { serverName, plan, totalCost }
+      });
+    }
 
     console.log('\n💳 Creating Stripe checkout session:', {
       serverName,
       plan,
-      totalCost
+      totalCost,
+      serverType,
+      minecraftVersion
     });
 
     const session = await stripe.checkout.sessions.create({
@@ -593,7 +610,7 @@ app.post('/create-checkout-session', async (req, res) => {
           recurring: {
             interval: 'month'
           },
-          unit_amount: Math.round(parseFloat(totalCost) * 100) // Convert to cents
+          unit_amount: Math.round(parseFloat(totalCost || 9.99) * 100) // Convert to cents, default to 9.99
         },
         quantity: 1
       }],
@@ -601,16 +618,16 @@ app.post('/create-checkout-session', async (req, res) => {
       success_url: `https://beta.goosehosting.com/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `https://beta.goosehosting.com/cancel`,
       metadata: {
-        serverName,
-        plan,
-        serverType,
-        minecraftVersion,
-        totalRam: totalRam.toString(),
-        maxPlayers: maxPlayers.toString(),
-        viewDistance: viewDistance.toString(),
-        whitelist: whitelist.toString(),
-        pvp: pvp.toString(),
-        plugins: Array.isArray(plugins) ? plugins.join(',') : 'none'
+        serverName: serverName || 'Unnamed Server',
+        plan: plan || 'custom',
+        serverType: serverType || 'vanilla',
+        minecraftVersion: minecraftVersion || '1.20',
+        totalRam: (totalRam || 4).toString(),
+        maxPlayers: (maxPlayers || 20).toString(),
+        viewDistance: (viewDistance || 10).toString(),
+        whitelist: (whitelist || false).toString(),
+        pvp: (pvp !== false).toString(), // Default to true
+        plugins: Array.isArray(plugins) ? plugins.join(',') : (plugins || 'none')
       }
     });
 
