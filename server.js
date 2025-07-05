@@ -477,7 +477,32 @@ async function createPterodactylServer(session) {
         owner: userResult.userId
       });
       
-      // Continue with rest of function...
+      // STEP 5: Update Stripe session with server details
+      if (session.id && process.env.STRIPE_SECRET_KEY) {
+        await stripe.checkout.sessions.update(session.id, {
+          metadata: {
+            ...session.metadata,
+            serverId: serverId,
+            serverUuid: serverUuid,
+            serverAddress: serverAddress,
+            pterodactylUserId: userResult.userId,
+            ownerEmail: customerEmail,
+            createdAt: new Date().toISOString()
+          }
+        });
+      }
+      
+      return {
+        success: true,
+        serverId,
+        serverUuid,
+        serverAddress,
+        user: {
+          id: userResult.userId,
+          email: customerEmail,
+          username: userResult.username
+        }
+      };
       
     } catch (serverError) {
       console.error('❌ Detailed server creation error:', {
@@ -490,39 +515,8 @@ async function createPterodactylServer(session) {
       throw serverError;
     }
     
-    console.log('🎉 Server created successfully:', {
-      id: serverId,
-      uuid: serverUuid,
-      address: serverAddress,
-      owner: userResult.userId
-    });
-    
-    // STEP 5: Update Stripe session with server details
-    if (session.id && process.env.STRIPE_SECRET_KEY) {
-      await stripe.checkout.sessions.update(session.id, {
-        metadata: {
-          ...session.metadata,
-          serverId: serverId,
-          serverUuid: serverUuid,
-          serverAddress: serverAddress,
-          pterodactylUserId: userResult.userId,
-          ownerEmail: customerEmail,
-          createdAt: new Date().toISOString()
-        }
-      });
-    }
-    
-    return {
-      success: true,
-      serverId,
-      serverUuid,
-      serverAddress,
-      user: {
-        id: userResult.userId,
-        email: customerEmail,
-        username: userResult.username
-      }
-    };
+    // This code should not be reached since we return inside the try block
+    // But keeping it as fallback (though this was causing the error)
     
   } catch (err) {
     console.error('❌ Server creation failed:', {
