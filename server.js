@@ -421,7 +421,7 @@ async function createPterodactylServer(session) {
       environment: {
         SERVER_JARFILE: 'server.jar',
         SERVER_MEMORY: totalRam * 1024,
-        MAX_PLAYERS: 20,
+        MAX_PLAYERS: parseInt(session.metadata?.maxPlayers) || 20,
         EULA: 'true'
       },
       limits: {
@@ -443,7 +443,17 @@ async function createPterodactylServer(session) {
     
     console.log('🛠️ Creating server with config:', JSON.stringify(serverData, null, 2));
     
-    const response = await pterodactylRequest('POST', '/servers', serverData);
+    const response = await axios.post(
+      `${PTERODACTYL_BASE}/servers`, 
+      serverData, 
+      {
+        headers: {
+          'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
+          'Content-Type': 'application/json',
+          'Accept': 'Application/vnd.pterodactyl.v1+json'
+        }
+      }
+    );
     
     const serverId = response.data.attributes.id;
     const serverUuid = response.data.attributes.uuid;
@@ -547,6 +557,100 @@ app.post('/create-user', async (req, res) => {
     
   } catch (error) {
     console.error('❌ API Error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get Stripe session details
+app.get('/session-details/:sessionId', async (req, res) => {
+  try {
+    if (!process.env.STRIPE_SECRET_KEY) {
+      return res.status(500).json({ error: 'Stripe not configured' });
+    }
+
+    const { sessionId } = req.params;
+    
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Session ID is required' });
+    }
+
+    console.log(`\n🔍 Fetching session details for: ${sessionId}`);
+
+    // Retrieve session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    console.log('📋 Session found:', {
+      id: session.id,
+      status: session.payment_status,
+      email: session.customer_details?.email,
+      metadata: session.metadata
+    });
+
+    // Check if session is paid and server hasn't been created yet
+    if (session.payment_status === 'paid' && !session.metadata?.serverId) {
+      console.log('💰 Payment confirmed, creating server...');
+      
+      try {
+        // Create the server
+        const serverResult = await createPterodactylServer(session);
+        
+        console.log('🎉 Server created successfully:', serverResult);
+        
+        return res.json({
+          success: true,
+          session: {
+            id: session.id,
+            status: session.payment_status,
+            customer_email: session.customer_details?.email,
+            metadata: session.metadata
+          },
+          server: {
+            id: serverResult.serverId,
+            uuid: serverResult.serverUuid,
+            address: serverResult.serverAddress,
+            user: serverResult.user
+          },
+          message: 'Server created successfully'
+        });
+        
+      } catch (serverError) {
+        console.error('❌ Server creation failed:', serverError.message);
+        
+        return res.json({
+          success: false,
+          session: {
+            id: session.id,
+            status: session.payment_status,
+            customer_email: session.customer_details?.email,
+            metadata: session.metadata
+          },
+          error: `Server creation failed: ${serverError.message}`,
+          message: 'Payment successful but server creation failed'
+        });
+      }
+    }
+
+    // Session exists but either not paid or server already created
+    return res.json({
+      success: true,
+      session: {
+        id: session.id,
+        status: session.payment_status,
+        customer_email: session.customer_details?.email,
+        metadata: session.metadata
+      },
+      message: session.payment_status === 'paid' ? 'Server already exists' : 'Payment pending'
+    });
+
+  } catch (error) {
+    console.error('❌ Session details error:', error.message);
     res.status(500).json({
       success: false,
       error: error.message
