@@ -21,17 +21,19 @@ app.use((req, res, next) => {
   }
 });
 
-// Environment validation
-if (!process.env.PTERODACTYL_BASE || !process.env.PTERODACTYL_API_KEY) {
-  console.error('❌ Missing PTERODACTYL_BASE or PTERODACTYL_API_KEY');
+// Environment validation with YOUR actual variable names
+if (!process.env.PTERODACTYL_API_URL || !process.env.PTERODACTYL_API_KEY) {
+  console.error('❌ Missing PTERODACTYL_API_URL or PTERODACTYL_API_KEY');
   process.exit(1);
 }
 
-const PTERODACTYL_BASE = process.env.PTERODACTYL_BASE;
+// Build the full API URL
+const PTERODACTYL_BASE = `https://${process.env.PTERODACTYL_API_URL}/api`;
 const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
 
 console.log('🔧 Environment loaded:');
-console.log(`📍 Base URL: ${PTERODACTYL_BASE}`);
+console.log(`📍 Panel URL: ${process.env.PTERODACTYL_API_URL}`);
+console.log(`📍 Full API URL: ${PTERODACTYL_BASE}`);
 console.log(`🔑 API Key: ${PTERODACTYL_API_KEY.substring(0, 15)}...`);
 
 // Helper function for Pterodactyl API requests
@@ -199,6 +201,21 @@ const CreateUser = async (email) => {
 
 // === ROUTES ===
 
+// Debug environment variables
+app.get('/debug/env', (req, res) => {
+  const env = {
+    PTERODACTYL_API_URL: process.env.PTERODACTYL_API_URL,
+    PTERODACTYL_API_KEY: process.env.PTERODACTYL_API_KEY ? `${process.env.PTERODACTYL_API_KEY.substring(0, 15)}...` : 'NOT SET',
+    FULL_API_URL: `https://${process.env.PTERODACTYL_API_URL}/api`,
+    NODE_ENV: process.env.NODE_ENV || 'not set'
+  };
+  
+  res.json({
+    environment: env,
+    status: 'Using your actual environment variable names'
+  });
+});
+
 // Test user creation
 app.post('/create-user', async (req, res) => {
   try {
@@ -337,6 +354,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`\n🚀 User Creation Server running on port ${PORT}`);
   console.log('📍 Available endpoints:');
+  console.log('  GET  /debug/env - Check environment variables');
   console.log('  POST /create-user - Create a new user');
   console.log('  GET  /users - List all users');
   console.log('  POST /search-user - Search user by email');
