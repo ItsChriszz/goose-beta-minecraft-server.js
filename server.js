@@ -430,7 +430,9 @@ async function createPterodactylServer(session) {
         SERVER_JARFILE: 'server.jar',
         SERVER_MEMORY: totalRam * 1024,
         MAX_PLAYERS: parseInt(session.metadata?.maxPlayers) || 20,
-        EULA: 'true'
+        EULA: 'true',
+        BUILD_NUMBER: 'latest', // Required by the egg
+        VERSION: session.metadata?.minecraftVersion || '1.21.3'
       },
       limits: {
         memory: totalRam * 1024,
