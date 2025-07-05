@@ -27,8 +27,8 @@ if (!process.env.PTERODACTYL_API_URL || !process.env.PTERODACTYL_API_KEY) {
   process.exit(1);
 }
 
-// Build the full API URL
-const PTERODACTYL_BASE = `https://${process.env.PTERODACTYL_API_URL}/api`;
+// Build the full API URL - FIXED to match your working server
+const PTERODACTYL_BASE = `https://${process.env.PTERODACTYL_API_URL}/api/application`;
 const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
 
 console.log('🔧 Environment loaded:');
@@ -206,7 +206,7 @@ app.get('/debug/env', (req, res) => {
   const env = {
     PTERODACTYL_API_URL: process.env.PTERODACTYL_API_URL,
     PTERODACTYL_API_KEY: process.env.PTERODACTYL_API_KEY ? `${process.env.PTERODACTYL_API_KEY.substring(0, 15)}...` : 'NOT SET',
-    FULL_API_URL: `https://${process.env.PTERODACTYL_API_URL}/api`,
+    FULL_API_URL: `https://${process.env.PTERODACTYL_API_URL}/api/application`,
     NODE_ENV: process.env.NODE_ENV || 'not set'
   };
   
