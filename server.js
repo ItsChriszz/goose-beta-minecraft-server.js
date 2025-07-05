@@ -12,9 +12,22 @@ app.use(express.urlencoded({ extended: true }));
 
 // CORS
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  const allowedOrigins = [
+    'https://beta.goosehosting.com',
+    'https://goosehosting.com',
+    'http://localhost:3000', // For development
+    'http://localhost:5173'  // For Vite dev
+  ];
+  
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+  
+  res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
   } else {
@@ -534,6 +547,83 @@ app.post('/create-user', async (req, res) => {
     
   } catch (error) {
     console.error('❌ API Error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Create Stripe checkout session
+app.post('/create-checkout-session', async (req, res) => {
+  try {
+    if (!process.env.STRIPE_SECRET_KEY) {
+      return res.status(500).json({ error: 'Stripe not configured' });
+    }
+
+    const { 
+      serverName, 
+      plan, 
+      serverType, 
+      minecraftVersion, 
+      totalRam, 
+      maxPlayers, 
+      viewDistance, 
+      whitelist, 
+      pvp, 
+      plugins,
+      totalCost 
+    } = req.body;
+
+    console.log('\n💳 Creating Stripe checkout session:', {
+      serverName,
+      plan,
+      totalCost
+    });
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: {
+            name: `${serverName} - ${plan.toUpperCase()} Plan`,
+            description: `Minecraft Server (${serverType} ${minecraftVersion})`
+          },
+          recurring: {
+            interval: 'month'
+          },
+          unit_amount: Math.round(parseFloat(totalCost) * 100) // Convert to cents
+        },
+        quantity: 1
+      }],
+      mode: 'subscription',
+      success_url: `https://beta.goosehosting.com/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `https://beta.goosehosting.com/cancel`,
+      metadata: {
+        serverName,
+        plan,
+        serverType,
+        minecraftVersion,
+        totalRam: totalRam.toString(),
+        maxPlayers: maxPlayers.toString(),
+        viewDistance: viewDistance.toString(),
+        whitelist: whitelist.toString(),
+        pvp: pvp.toString(),
+        plugins: Array.isArray(plugins) ? plugins.join(',') : 'none'
+      }
+    });
+
+    console.log('✅ Stripe session created:', session.id);
+
+    res.json({
+      success: true,
+      sessionId: session.id,
+      url: session.url
+    });
+
+  } catch (error) {
+    console.error('❌ Stripe checkout error:', error.message);
     res.status(500).json({
       success: false,
       error: error.message
