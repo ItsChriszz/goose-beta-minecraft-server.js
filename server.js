@@ -1,8 +1,22 @@
-// server.js - Updated to properly store user credentials in Stripe metadata
+// server.js - FIXED VERSION - Resolves stripe.checkout.sessions.update issue
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+// Fix: Initialize Stripe properly with error handling
+let stripe;
+try {
+  if (!process.env.STRIPE_SECRET_KEY) {
+    console.warn('⚠️ STRIPE_SECRET_KEY not found in environment variables');
+    stripe = null;
+  } else {
+    stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    console.log('✅ Stripe initialized successfully');
+  }
+} catch (error) {
+  console.error('❌ Failed to initialize Stripe:', error.message);
+  stripe = null;
+}
 
 const app = express();
 
@@ -216,10 +230,13 @@ const CreateUser = async (email) => {
   }
 };
 
-// Create Pterodactyl Server function (Updated to store credentials in metadata)
+// In-memory session store for when Stripe update fails
+const sessionCredentialsStore = new Map();
+
+// FIXED: Create Pterodactyl Server function with better error handling
 async function createPterodactylServer(session) {
-  if (!process.env.STRIPE_SECRET_KEY || !nodeId || !process.env.PTERODACTYL_EGG_ID) {
-    throw new Error('Server creation requires STRIPE_SECRET_KEY, PTERODACTYL_NODE_ID, and PTERODACTYL_EGG_ID');
+  if (!nodeId || !process.env.PTERODACTYL_EGG_ID) {
+    throw new Error('Server creation requires PTERODACTYL_NODE_ID and PTERODACTYL_EGG_ID');
   }
 
   try {
@@ -314,35 +331,65 @@ async function createPterodactylServer(session) {
       address: serverAddress
     });
     
-    // STEP 5: Update Stripe session with server details AND user credentials
-    if (session.id && process.env.STRIPE_SECRET_KEY) {
-      const updateMetadata = {
-        ...session.metadata,
-        serverId: serverId,
-        serverUuid: serverUuid,
-        serverAddress: serverAddress,
-        pterodactylUserId: userResult.userId,
-        pterodactylUsername: userResult.username,
-        ownerEmail: customerEmail,
-        createdAt: new Date().toISOString(),
-        userStatus: userResult.existing ? 'existing' : 'new'
-      };
+    // STEP 5: Prepare credentials and server info
+    const serverInfo = {
+      serverId: serverId,
+      serverUuid: serverUuid,
+      serverAddress: serverAddress,
+      pterodactylUserId: userResult.userId,
+      pterodactylUsername: userResult.username,
+      ownerEmail: customerEmail,
+      createdAt: new Date().toISOString(),
+      userStatus: userResult.existing ? 'existing' : 'new'
+    };
 
-      // Only add credentials for new users
-      if (!userResult.existing && userResult.password) {
-        updateMetadata.serverUsername = userResult.username;
-        updateMetadata.serverPassword = userResult.password;
-        updateMetadata.ftpHost = 'ftp.goosehosting.com';
-        updateMetadata.ftpPort = '21';
-        updateMetadata.ftpUsername = userResult.username;
-        updateMetadata.ftpPassword = userResult.password;
+    // Only add credentials for new users
+    if (!userResult.existing && userResult.password) {
+      serverInfo.serverUsername = userResult.username;
+      serverInfo.serverPassword = userResult.password;
+      serverInfo.ftpHost = 'ftp.goosehosting.com';
+      serverInfo.ftpPort = '21';
+      serverInfo.ftpUsername = userResult.username;
+      serverInfo.ftpPassword = userResult.password;
+    }
+
+    // STEP 6: Try to update Stripe session, but don't fail if it doesn't work
+    if (stripe && session.id) {
+      try {
+        console.log('🔄 Attempting to update Stripe session metadata...');
+        
+        // Verify stripe.checkout.sessions.update exists
+        if (typeof stripe.checkout?.sessions?.update !== 'function') {
+          throw new Error('stripe.checkout.sessions.update is not available');
+        }
+        
+        const updateMetadata = {
+          ...session.metadata,
+          ...serverInfo
+        };
+
+        await stripe.checkout.sessions.update(session.id, {
+          metadata: updateMetadata
+        });
+        
+        console.log('✅ Updated Stripe session with credentials');
+      } catch (stripeError) {
+        console.warn('⚠️ Failed to update Stripe session, storing in memory:', stripeError.message);
+        
+        // Store in memory as fallback
+        sessionCredentialsStore.set(session.id, {
+          ...session.metadata,
+          ...serverInfo
+        });
+        
+        console.log('💾 Stored credentials in memory store as fallback');
       }
-
-      await stripe.checkout.sessions.update(session.id, {
-        metadata: updateMetadata
+    } else {
+      console.warn('⚠️ Stripe not available, storing credentials in memory');
+      sessionCredentialsStore.set(session.id, {
+        ...session.metadata,
+        ...serverInfo
       });
-      
-      console.log('✅ Updated Stripe session with credentials');
     }
     
     return {
@@ -356,7 +403,8 @@ async function createPterodactylServer(session) {
         username: userResult.username,
         password: userResult.password,
         existing: userResult.existing
-      }
+      },
+      credentials: serverInfo
     };
     
   } catch (err) {
@@ -365,13 +413,9 @@ async function createPterodactylServer(session) {
   }
 }
 
-// Get Stripe session details (Updated to include credentials)
+// FIXED: Get Stripe session details with fallback to memory store
 app.get('/session-details/:sessionId', async (req, res) => {
   try {
-    if (!process.env.STRIPE_SECRET_KEY) {
-      return res.status(500).json({ error: 'Stripe not configured' });
-    }
-
     const { sessionId } = req.params;
     
     if (!sessionId) {
@@ -380,22 +424,49 @@ app.get('/session-details/:sessionId', async (req, res) => {
 
     console.log(`\n🔍 Fetching session details for: ${sessionId}`);
 
-    // Retrieve session from Stripe
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    
-    if (!session) {
+    let session = null;
+    let metadata = {};
+
+    // Try to get session from Stripe if available
+    if (stripe) {
+      try {
+        session = await stripe.checkout.sessions.retrieve(sessionId);
+        metadata = session.metadata || {};
+        console.log('📋 Session found from Stripe:', {
+          id: session.id,
+          status: session.payment_status,
+          email: session.customer_details?.email,
+          hasCredentials: !!(metadata.serverUsername)
+        });
+      } catch (stripeError) {
+        console.warn('⚠️ Failed to retrieve from Stripe:', stripeError.message);
+      }
+    }
+
+    // Check memory store for additional data
+    const memoryData = sessionCredentialsStore.get(sessionId);
+    if (memoryData) {
+      console.log('💾 Found additional data in memory store');
+      metadata = { ...metadata, ...memoryData };
+    }
+
+    // If no session found anywhere, return error
+    if (!session && !memoryData) {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    console.log('📋 Session found:', {
-      id: session.id,
-      status: session.payment_status,
-      email: session.customer_details?.email,
-      hasCredentials: !!(session.metadata?.serverUsername)
-    });
+    // Create mock session if only memory data exists
+    if (!session && memoryData) {
+      session = {
+        id: sessionId,
+        payment_status: 'paid',
+        customer_details: { email: memoryData.ownerEmail },
+        metadata: memoryData
+      };
+    }
 
     // Check if session is paid and server hasn't been created yet
-    if (session.payment_status === 'paid' && !session.metadata?.serverId) {
+    if (session.payment_status === 'paid' && !metadata.serverId) {
       console.log('💰 Payment confirmed, creating server...');
       
       try {
@@ -403,16 +474,16 @@ app.get('/session-details/:sessionId', async (req, res) => {
         
         console.log('🎉 Server created successfully');
         
-        // Fetch updated session to get the stored credentials
-        const updatedSession = await stripe.checkout.sessions.retrieve(sessionId);
+        // Update metadata with the new server info
+        metadata = { ...metadata, ...serverResult.credentials };
         
         return res.json({
           success: true,
           session: {
-            id: updatedSession.id,
-            status: updatedSession.payment_status,
-            customer_email: updatedSession.customer_details?.email,
-            metadata: updatedSession.metadata
+            id: session.id,
+            status: session.payment_status,
+            customer_email: session.customer_details?.email,
+            metadata: metadata
           },
           server: {
             id: serverResult.serverId,
@@ -432,7 +503,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
             id: session.id,
             status: session.payment_status,
             customer_email: session.customer_details?.email,
-            metadata: session.metadata
+            metadata: metadata
           },
           error: `Server creation failed: ${serverError.message}`,
           message: 'Payment successful but server creation failed'
@@ -447,7 +518,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
         id: session.id,
         status: session.payment_status,
         customer_email: session.customer_details?.email,
-        metadata: session.metadata
+        metadata: metadata
       },
       message: session.payment_status === 'paid' ? 'Server already exists' : 'Payment pending'
     });
@@ -464,7 +535,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
 // Create Stripe checkout session (No changes needed)
 app.post('/create-checkout-session', async (req, res) => {
   try {
-    if (!process.env.STRIPE_SECRET_KEY) {
+    if (!stripe) {
       return res.status(500).json({ error: 'Stripe not configured' });
     }
 
@@ -551,7 +622,9 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
-    service: 'combined-user-server-management'
+    service: 'combined-user-server-management',
+    stripe: !!stripe,
+    memoryStore: sessionCredentialsStore.size
   });
 });
 
@@ -564,8 +637,11 @@ app.listen(PORT, () => {
   console.log('  POST /create-checkout-session - Create Stripe checkout');
   console.log('  GET  /health - Health check');
   
-  if (!process.env.STRIPE_SECRET_KEY || !nodeId || !process.env.PTERODACTYL_EGG_ID) {
-    console.log('\n⚠️ Server creation disabled - missing environment variables');
+  if (!stripe || !nodeId || !process.env.PTERODACTYL_EGG_ID) {
+    console.log('\n⚠️ Server creation partially disabled - missing environment variables');
+    if (!stripe) console.log('  - Stripe not configured');
+    if (!nodeId) console.log('  - PTERODACTYL_NODE_ID missing');
+    if (!process.env.PTERODACTYL_EGG_ID) console.log('  - PTERODACTYL_EGG_ID missing');
   } else {
     console.log('\n✅ Server creation enabled with credentials storage');
   }
