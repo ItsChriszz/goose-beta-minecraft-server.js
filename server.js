@@ -1,4 +1,4 @@
-// server.js - FIXED VERSION - Resolves stripe.checkout.sessions.update issue
+// server.js - FIXED VERSION with proper Java version support
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
@@ -29,8 +29,8 @@ app.use((req, res, next) => {
   const allowedOrigins = [
     'https://beta.goosehosting.com',
     'https://goosehosting.com',
-    'http://localhost:3000', // For development
-    'http://localhost:5173'  // For Vite dev
+    'http://localhost:3000',
+    'http://localhost:5173'
   ];
   
   const origin = req.headers.origin;
@@ -68,8 +68,94 @@ validateEnvVars();
 // Pterodactyl configuration
 const PTERODACTYL_BASE = process.env.PTERODACTYL_API_URL;
 const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
-const MaxServersPerNode = parseInt(process.env.MaxServersPerNode) || 50;
 const nodeId = process.env.PTERODACTYL_NODE_ID;
+
+// FIXED: Java version mapping for Minecraft versions (Updated for Java 21 LTS)
+const getJavaVersionForMinecraft = (minecraftVersion) => {
+  if (!minecraftVersion) return { java: 21, image: 'ghcr.io/pterodactyl/yolks:java_21' };
+  
+  // Parse version string to compare properly
+  const parseVersion = (version) => {
+    const parts = version.replace(/[^0-9.]/g, '').split('.').map(Number);
+    return {
+      major: parts[0] || 1,
+      minor: parts[1] || 0,
+      patch: parts[2] || 0
+    };
+  };
+  
+  const version = parseVersion(minecraftVersion);
+  
+  console.log(`🔍 Determining Java version for Minecraft ${minecraftVersion}:`, version);
+  
+  // Minecraft 1.20.5+ works best with Java 21 (latest LTS)
+  if (version.major > 1 || (version.major === 1 && version.minor >= 21)) {
+    console.log('✅ Using Java 21 for Minecraft 1.21+');
+    return {
+      java: 21,
+      image: 'ghcr.io/pterodactyl/yolks:java_21',
+      startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}'
+    };
+  }
+  
+  // Minecraft 1.20.x works well with Java 21 but also supports Java 17
+  if (version.major === 1 && version.minor === 20) {
+    console.log('✅ Using Java 21 for Minecraft 1.20.x (optimal performance)');
+    return {
+      java: 21,
+      image: 'ghcr.io/pterodactyl/yolks:java_21',
+      startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}'
+    };
+  }
+  
+  // Minecraft 1.17-1.19 requires Java 17+, but Java 21 works better
+  if (version.major === 1 && version.minor >= 17 && version.minor <= 19) {
+    console.log('✅ Using Java 21 for Minecraft 1.17-1.19 (backwards compatible)');
+    return {
+      java: 21,
+      image: 'ghcr.io/pterodactyl/yolks:java_21',
+      startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}'
+    };
+  }
+  
+  // Minecraft 1.16.x requires Java 11+ (but Java 17 is better)
+  if (version.major === 1 && version.minor === 16) {
+    console.log('✅ Using Java 17 for Minecraft 1.16.x');
+    return {
+      java: 17,
+      image: 'ghcr.io/pterodactyl/yolks:java_17',
+      startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}'
+    };
+  }
+  
+  // Minecraft 1.12-1.15 works with Java 8, but Java 11 is more stable
+  if (version.major === 1 && version.minor >= 12 && version.minor <= 15) {
+    console.log('✅ Using Java 11 for Minecraft 1.12-1.15 (better stability)');
+    return {
+      java: 11,
+      image: 'ghcr.io/pterodactyl/yolks:java_11',
+      startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}'
+    };
+  }
+  
+  // Older versions (1.8-1.11) need Java 8 for compatibility
+  if (version.major === 1 && version.minor >= 8 && version.minor <= 11) {
+    console.log('✅ Using Java 8 for Minecraft 1.8-1.11 (required for compatibility)');
+    return {
+      java: 8,
+      image: 'ghcr.io/pterodactyl/yolks:java_8',
+      startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}'
+    };
+  }
+  
+  // Default to Java 21 for unknown/latest versions (future-proof)
+  console.log('⚠️ Unknown version, defaulting to Java 21 (latest LTS)');
+  return {
+    java: 21,
+    image: 'ghcr.io/pterodactyl/yolks:java_21',
+    startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}'
+  };
+};
 
 // Helper function for Pterodactyl API requests
 const pterodactylRequest = async (method, endpoint, data = null) => {
@@ -105,7 +191,7 @@ const pterodactylRequest = async (method, endpoint, data = null) => {
   }
 };
 
-// Improved username generator
+// Username and password generators (unchanged)
 function generateUsernameFromEmail(email) {
   let username = email.split('@')[0]
     .replace(/[^a-z0-9]/gi, '')
@@ -120,7 +206,6 @@ function generateUsernameFromEmail(email) {
   return `${username}${suffix}`.slice(0, 16);
 }
 
-// Secure password generator
 function generateRandomPassword(length = 16) {
   const chars = {
     lower: 'abcdefghijklmnopqrstuvwxyz',
@@ -143,7 +228,7 @@ function generateRandomPassword(length = 16) {
   return password.split('').sort(() => 0.5 - Math.random()).join('');
 }
 
-// MAIN FUNCTION: Create User (Returns credentials for storing in metadata)
+// Create User function (unchanged)
 const CreateUser = async (email) => {
   if (!email || typeof email !== 'string') {
     throw new Error('Email must be a valid string');
@@ -158,7 +243,7 @@ const CreateUser = async (email) => {
   try {
     console.log(`Starting user creation for: ${email}`);
 
-    // 1. Check for existing user
+    // Check for existing user
     const searchUrl = `${PTERODACTYL_BASE}/users?filter[email]=${encodeURIComponent(email)}`;
     const searchResponse = await axios.get(searchUrl, {
       headers: {
@@ -178,16 +263,15 @@ const CreateUser = async (email) => {
         email: user.email,
         existing: true,
         admin: user.root_admin,
-        password: null // Don't return password for existing users
+        password: null
       };
     }
 
-    // 2. Generate username and password
+    // Generate credentials and create user
     const username = generateUsernameFromEmail(email);
     const password = generateRandomPassword(16);
     console.log(`Generated credentials - Username: ${username}`);
 
-    // 3. Create new user
     const createUrl = `${PTERODACTYL_BASE}/users`;
     const userData = {
       email: email,
@@ -219,7 +303,7 @@ const CreateUser = async (email) => {
       userId: createResponse.data.attributes.id.toString(),
       username: createResponse.data.attributes.username,
       email: createResponse.data.attributes.email,
-      password: password, // Return password for new users
+      password: password,
       existing: false,
       admin: createResponse.data.attributes.root_admin
     };
@@ -230,10 +314,10 @@ const CreateUser = async (email) => {
   }
 };
 
-// In-memory session store for when Stripe update fails
+// In-memory session store
 const sessionCredentialsStore = new Map();
 
-// FIXED: Create Pterodactyl Server function with better error handling
+// FIXED: Create Pterodactyl Server with proper Java version support
 async function createPterodactylServer(session) {
   if (!nodeId || !process.env.PTERODACTYL_EGG_ID) {
     throw new Error('Server creation requires PTERODACTYL_NODE_ID and PTERODACTYL_EGG_ID');
@@ -265,8 +349,14 @@ async function createPterodactylServer(session) {
     // STEP 2: Extract server settings from session metadata
     const serverName = session.metadata?.serverName || `Server-${Date.now()}`;
     const totalRam = parseInt(session.metadata?.totalRam) || 4;
+    const minecraftVersion = session.metadata?.minecraftVersion || '1.21.4';
+    const serverType = session.metadata?.serverType || 'paper';
     
-    // STEP 3: Get available allocation
+    // STEP 3: Get correct Java version and Docker image
+    const javaConfig = getJavaVersionForMinecraft(minecraftVersion);
+    console.log('☕ Java configuration:', javaConfig);
+    
+    // STEP 4: Get available allocation
     const allocRes = await pterodactylRequest('GET', `/nodes/${nodeId}/allocations`);
     const availableAllocations = allocRes.data.data.filter(a => !a.attributes.assigned);
     
@@ -277,20 +367,22 @@ async function createPterodactylServer(session) {
     const allocation = availableAllocations[0];
     console.log(`🎯 Using allocation: ${allocation.attributes.id}`);
     
-    // STEP 4: Create server
+    // STEP 5: Create server with correct Java configuration
     const serverData = {
       name: serverName,
       user: parseInt(userResult.userId),
       egg: parseInt(process.env.PTERODACTYL_EGG_ID),
-      docker_image: 'ghcr.io/pterodactyl/yolks:java_17',
-      startup: 'java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}',
+      docker_image: javaConfig.image, // Use correct Java image
+      startup: javaConfig.startup,     // Use correct startup command
       environment: {
         SERVER_JARFILE: 'server.jar',
         SERVER_MEMORY: totalRam * 1024,
         MAX_PLAYERS: parseInt(session.metadata?.maxPlayers) || 20,
         EULA: 'true',
         BUILD_NUMBER: 'latest',
-        VERSION: session.metadata?.minecraftVersion || '1.21.3'
+        VERSION: minecraftVersion,
+        SERVER_TYPE: serverType.toUpperCase(), // PAPER, SPIGOT, etc.
+        JAVA_VERSION: javaConfig.java.toString() // Store Java version for reference
       },
       limits: {
         memory: totalRam * 1024,
@@ -308,6 +400,14 @@ async function createPterodactylServer(session) {
         default: allocation.attributes.id
       }
     };
+    
+    console.log('🔨 Creating server with configuration:', {
+      name: serverData.name,
+      image: serverData.docker_image,
+      java: javaConfig.java,
+      minecraft: minecraftVersion,
+      type: serverType
+    });
     
     const response = await axios.post(
       `${PTERODACTYL_BASE}/servers`, 
@@ -328,10 +428,12 @@ async function createPterodactylServer(session) {
     console.log('🎉 Server created successfully:', {
       id: serverId,
       uuid: serverUuid,
-      address: serverAddress
+      address: serverAddress,
+      java: javaConfig.java,
+      image: javaConfig.image
     });
     
-    // STEP 5: Prepare credentials and server info
+    // STEP 6: Prepare credentials and server info
     const serverInfo = {
       serverId: serverId,
       serverUuid: serverUuid,
@@ -340,7 +442,11 @@ async function createPterodactylServer(session) {
       pterodactylUsername: userResult.username,
       ownerEmail: customerEmail,
       createdAt: new Date().toISOString(),
-      userStatus: userResult.existing ? 'existing' : 'new'
+      userStatus: userResult.existing ? 'existing' : 'new',
+      javaVersion: javaConfig.java,
+      dockerImage: javaConfig.image,
+      minecraftVersion: minecraftVersion,
+      serverType: serverType
     };
 
     // Only add credentials for new users
@@ -353,12 +459,11 @@ async function createPterodactylServer(session) {
       serverInfo.ftpPassword = userResult.password;
     }
 
-    // STEP 6: Try to update Stripe session, but don't fail if it doesn't work
+    // STEP 7: Try to update Stripe session
     if (stripe && session.id) {
       try {
         console.log('🔄 Attempting to update Stripe session metadata...');
         
-        // Verify stripe.checkout.sessions.update exists
         if (typeof stripe.checkout?.sessions?.update !== 'function') {
           throw new Error('stripe.checkout.sessions.update is not available');
         }
@@ -375,13 +480,10 @@ async function createPterodactylServer(session) {
         console.log('✅ Updated Stripe session with credentials');
       } catch (stripeError) {
         console.warn('⚠️ Failed to update Stripe session, storing in memory:', stripeError.message);
-        
-        // Store in memory as fallback
         sessionCredentialsStore.set(session.id, {
           ...session.metadata,
           ...serverInfo
         });
-        
         console.log('💾 Stored credentials in memory store as fallback');
       }
     } else {
@@ -413,7 +515,7 @@ async function createPterodactylServer(session) {
   }
 }
 
-// FIXED: Get Stripe session details with fallback to memory store
+// Get session details endpoint (unchanged except for better logging)
 app.get('/session-details/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -427,7 +529,6 @@ app.get('/session-details/:sessionId', async (req, res) => {
     let session = null;
     let metadata = {};
 
-    // Try to get session from Stripe if available
     if (stripe) {
       try {
         session = await stripe.checkout.sessions.retrieve(sessionId);
@@ -436,26 +537,24 @@ app.get('/session-details/:sessionId', async (req, res) => {
           id: session.id,
           status: session.payment_status,
           email: session.customer_details?.email,
-          hasCredentials: !!(metadata.serverUsername)
+          hasCredentials: !!(metadata.serverUsername),
+          hasServer: !!(metadata.serverId)
         });
       } catch (stripeError) {
         console.warn('⚠️ Failed to retrieve from Stripe:', stripeError.message);
       }
     }
 
-    // Check memory store for additional data
     const memoryData = sessionCredentialsStore.get(sessionId);
     if (memoryData) {
       console.log('💾 Found additional data in memory store');
       metadata = { ...metadata, ...memoryData };
     }
 
-    // If no session found anywhere, return error
     if (!session && !memoryData) {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    // Create mock session if only memory data exists
     if (!session && memoryData) {
       session = {
         id: sessionId,
@@ -465,16 +564,13 @@ app.get('/session-details/:sessionId', async (req, res) => {
       };
     }
 
-    // Check if session is paid and server hasn't been created yet
     if (session.payment_status === 'paid' && !metadata.serverId) {
       console.log('💰 Payment confirmed, creating server...');
       
       try {
         const serverResult = await createPterodactylServer(session);
-        
         console.log('🎉 Server created successfully');
         
-        // Update metadata with the new server info
         metadata = { ...metadata, ...serverResult.credentials };
         
         return res.json({
@@ -511,7 +607,6 @@ app.get('/session-details/:sessionId', async (req, res) => {
       }
     }
 
-    // Session exists - return current state with credentials if available
     return res.json({
       success: true,
       session: {
@@ -532,7 +627,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
   }
 });
 
-// Create Stripe checkout session (No changes needed)
+// Create checkout session endpoint (unchanged)
 app.post('/create-checkout-session', async (req, res) => {
   try {
     if (!stripe) {
@@ -564,7 +659,9 @@ app.post('/create-checkout-session', async (req, res) => {
     console.log('💳 Creating Stripe checkout session:', {
       serverName,
       plan: planId,
-      totalCost
+      totalCost,
+      minecraftVersion,
+      serverType
     });
 
     const session = await stripe.checkout.sessions.create({
@@ -589,8 +686,8 @@ app.post('/create-checkout-session', async (req, res) => {
       metadata: {
         serverName: serverName || 'Unnamed Server',
         plan: planId || 'custom',
-        serverType: serverType || 'vanilla',
-        minecraftVersion: minecraftVersion || '1.20',
+        serverType: serverType || 'paper',
+        minecraftVersion: minecraftVersion || '1.21.4',
         totalRam: (totalRam || 4).toString(),
         maxPlayers: (maxPlayers || 20).toString(),
         viewDistance: (viewDistance || 10).toString(),
@@ -636,6 +733,13 @@ app.listen(PORT, () => {
   console.log('  GET  /session-details/:sessionId - Get session and server details');
   console.log('  POST /create-checkout-session - Create Stripe checkout');
   console.log('  GET  /health - Health check');
+  console.log('\n☕ Java version mapping (Updated for Java 21 LTS):');
+  console.log('  Minecraft 1.21+ → Java 21 (Latest LTS)');
+  console.log('  Minecraft 1.20.x → Java 21 (Optimal)');
+  console.log('  Minecraft 1.17-1.19 → Java 21 (Backwards Compatible)');
+  console.log('  Minecraft 1.16.x → Java 17');
+  console.log('  Minecraft 1.12-1.15 → Java 11');
+  console.log('  Minecraft 1.8-1.11 → Java 8');
   
   if (!stripe || !nodeId || !process.env.PTERODACTYL_EGG_ID) {
     console.log('\n⚠️ Server creation partially disabled - missing environment variables');
@@ -643,7 +747,7 @@ app.listen(PORT, () => {
     if (!nodeId) console.log('  - PTERODACTYL_NODE_ID missing');
     if (!process.env.PTERODACTYL_EGG_ID) console.log('  - PTERODACTYL_EGG_ID missing');
   } else {
-    console.log('\n✅ Server creation enabled with credentials storage');
+    console.log('\n✅ Server creation enabled with proper Java version support');
   }
 });
 
@@ -651,5 +755,6 @@ module.exports = {
   app, 
   CreateUser, 
   createPterodactylServer, 
-  generateRandomPassword 
+  generateRandomPassword,
+  getJavaVersionForMinecraft
 };
