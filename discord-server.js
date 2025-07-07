@@ -6,7 +6,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// Fix: Initialize Stripe properly with error handling
+// Initialize Stripe with error handling
 let stripe;
 try {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -48,7 +48,6 @@ const upload = multer({
     fileSize: 100 * 1024 * 1024 // 100MB limit
   },
   fileFilter: (req, file, cb) => {
-    // Allow common bot files
     const allowedExtensions = ['.js', '.json', '.py', '.ts', '.zip', '.tar.gz'];
     const ext = path.extname(file.originalname).toLowerCase();
     if (allowedExtensions.includes(ext)) {
@@ -59,7 +58,7 @@ const upload = multer({
   }
 });
 
-// CORS
+// Enhanced CORS configuration
 app.use((req, res, next) => {
   const allowedOrigins = [
     'https://beta.goosehosting.com',
@@ -71,24 +70,25 @@ app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   }
-  
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   
   if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
-    next();
+    return res.sendStatus(200);
   }
+  next();
 });
 
 // Environment validation
 const validateEnvVars = () => {
   const requiredVars = [
     'PTERODACTYL_API_URL',
-    'PTERODACTYL_API_KEY'
+    'PTERODACTYL_API_KEY',
+    'STRIPE_SECRET_KEY',
+    'PTERODACTYL_DISCORD_NODE_ID',
+    'PTERODACTYL_DISCORD_EGG_ID'
   ];
   
   const missingRequired = requiredVars.filter(varName => !process.env[varName]);
@@ -103,7 +103,8 @@ validateEnvVars();
 // Pterodactyl configuration
 const PTERODACTYL_BASE = process.env.PTERODACTYL_API_URL;
 const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
-const nodeId = process.env.PTERODACTYL_DISCORD_NODE_ID || process.env.PTERODACTYL_NODE_ID;
+const nodeId = process.env.PTERODACTYL_DISCORD_NODE_ID;
+const discordEggId = process.env.PTERODACTYL_DISCORD_EGG_ID;
 
 // Discord Bot runtime configurations
 const getDiscordBotRuntime = (language, framework) => {
@@ -326,7 +327,7 @@ public class Program
   return runtimes[language]?.[framework] || runtimes['nodejs']['discord.js'];
 };
 
-// Helper function for Pterodactyl API requests
+// Enhanced Pterodactyl API request helper
 const pterodactylRequest = async (method, endpoint, data = null) => {
   const config = {
     method,
@@ -350,13 +351,14 @@ const pterodactylRequest = async (method, endpoint, data = null) => {
     console.log(`✅ ${method} ${endpoint} - Status: ${response.status}`);
     return response;
   } catch (error) {
-    console.error(`❌ ${method} ${endpoint} - Error:`, {
+    const errorDetails = {
       status: error.response?.status,
       statusText: error.response?.statusText,
       data: error.response?.data,
       message: error.message
-    });
-    throw error;
+    };
+    console.error(`❌ ${method} ${endpoint} - Error:`, errorDetails);
+    throw new Error(errorDetails.message || `Pterodactyl API request failed: ${endpoint}`);
   }
 };
 
@@ -397,7 +399,7 @@ function generateRandomPassword(length = 16) {
   return password.split('').sort(() => 0.5 - Math.random()).join('');
 }
 
-// Create User function (same as Minecraft)
+// Enhanced Create User function
 const CreateUser = async (email) => {
   if (!email || typeof email !== 'string') {
     throw new Error('Email must be a valid string');
@@ -486,9 +488,9 @@ const CreateUser = async (email) => {
 // In-memory session store
 const sessionCredentialsStore = new Map();
 
-// Create Discord Bot Server
+// Enhanced Discord Bot Server creation
 async function createDiscordBotServer(session) {
-  if (!nodeId || !process.env.PTERODACTYL_DISCORD_EGG_ID) {
+  if (!nodeId || !discordEggId) {
     throw new Error('Discord bot creation requires PTERODACTYL_DISCORD_NODE_ID and PTERODACTYL_DISCORD_EGG_ID');
   }
 
@@ -541,11 +543,11 @@ async function createDiscordBotServer(session) {
     const serverData = {
       name: botName,
       user: parseInt(userResult.userId),
-      egg: parseInt(process.env.PTERODACTYL_DISCORD_EGG_ID),
+      egg: parseInt(discordEggId),
       docker_image: runtime.image,
       startup: runtime.startup,
       environment: {
-        DISCORD_TOKEN: '', // User will set this
+        DISCORD_TOKEN: session.metadata?.discordToken || '',
         BOT_NAME: botName,
         LANGUAGE: language,
         FRAMEWORK: framework,
@@ -576,17 +578,7 @@ async function createDiscordBotServer(session) {
       plan: planType
     });
     
-    const response = await axios.post(
-      `${PTERODACTYL_BASE}/servers`, 
-      serverData, 
-      {
-        headers: {
-          'Authorization': `Bearer ${PTERODACTYL_API_KEY}`,
-          'Content-Type': 'application/json',
-          'Accept': 'Application/vnd.pterodactyl.v1+json'
-        }
-      }
-    );
+    const response = await pterodactylRequest('POST', '/servers', serverData);
     
     const serverId = response.data.attributes.id;
     const serverUuid = response.data.attributes.uuid;
@@ -691,7 +683,6 @@ async function uploadDefaultFiles(serverUuid, files) {
   
   for (const [filename, content] of Object.entries(files)) {
     try {
-      // Use Pterodactyl file API to create file
       await pterodactylRequest('POST', `/servers/${serverUuid}/files/write`, {
         root: '/',
         files: [{
@@ -702,12 +693,15 @@ async function uploadDefaultFiles(serverUuid, files) {
       console.log(`📄 Created file: ${filename}`);
     } catch (error) {
       console.warn(`⚠️ Failed to create file ${filename}:`, error.message);
+      throw error;
     }
   }
 }
 
+// API Endpoints with /api prefix for better organization
+
 // Get session details endpoint
-app.get('/discord-session-details/:sessionId', async (req, res) => {
+app.get('/api/discord-session-details/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     
@@ -819,7 +813,7 @@ app.get('/discord-session-details/:sessionId', async (req, res) => {
 });
 
 // Create Discord bot checkout session endpoint
-app.post('/create-discord-checkout-session', async (req, res) => {
+app.post('/api/create-discord-checkout-session', async (req, res) => {
   try {
     if (!stripe) {
       return res.status(500).json({ error: 'Stripe not configured' });
@@ -838,7 +832,8 @@ app.post('/create-discord-checkout-session', async (req, res) => {
       monthlyCost,
       effectiveMonthlyRate,
       discount,
-      savings
+      savings,
+      discordToken
     } = botConfig;
 
     if (!botName || !planId || (!totalCost && !monthlyCost)) {
@@ -876,7 +871,6 @@ app.post('/create-discord-checkout-session', async (req, res) => {
       unitAmount = Math.round((monthlyCost || effectiveMonthlyRate || 3.99) * 100);
       description = `Discord Bot (${language}/${framework}) - Monthly`;
     } else {
-      // For non-monthly billing, use the total cost for the period
       unitAmount = Math.round((totalCost || monthlyCost || 3.99) * 100);
       const periodNames = {
         'quarterly': '3 months',
@@ -925,6 +919,7 @@ app.post('/create-discord-checkout-session', async (req, res) => {
         effectiveMonthlyRate: (effectiveMonthlyRate || 0).toString(),
         discount: (discount || 0).toString(),
         savings: (savings || 0).toString(),
+        discordToken: discordToken || '',
         serviceType: 'discord-bot'
       }
     });
@@ -952,7 +947,7 @@ app.post('/create-discord-checkout-session', async (req, res) => {
 });
 
 // File upload endpoint for Discord bots
-app.post('/upload-discord-bot', upload.single('botFile'), async (req, res) => {
+app.post('/api/upload-discord-bot', upload.single('botFile'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -1006,7 +1001,7 @@ app.post('/upload-discord-bot', upload.single('botFile'), async (req, res) => {
 });
 
 // Discord bot management endpoints
-app.post('/discord-bot/:serverUuid/start', async (req, res) => {
+app.post('/api/discord-bot/:serverUuid/start', async (req, res) => {
   try {
     const { serverUuid } = req.params;
     
@@ -1020,7 +1015,7 @@ app.post('/discord-bot/:serverUuid/start', async (req, res) => {
   }
 });
 
-app.post('/discord-bot/:serverUuid/stop', async (req, res) => {
+app.post('/api/discord-bot/:serverUuid/stop', async (req, res) => {
   try {
     const { serverUuid } = req.params;
     
@@ -1034,7 +1029,7 @@ app.post('/discord-bot/:serverUuid/stop', async (req, res) => {
   }
 });
 
-app.post('/discord-bot/:serverUuid/restart', async (req, res) => {
+app.post('/api/discord-bot/:serverUuid/restart', async (req, res) => {
   try {
     const { serverUuid } = req.params;
     
@@ -1049,7 +1044,7 @@ app.post('/discord-bot/:serverUuid/restart', async (req, res) => {
 });
 
 // Get Discord bot status
-app.get('/discord-bot/:serverUuid/status', async (req, res) => {
+app.get('/api/discord-bot/:serverUuid/status', async (req, res) => {
   try {
     const { serverUuid } = req.params;
     
@@ -1069,13 +1064,15 @@ app.get('/discord-bot/:serverUuid/status', async (req, res) => {
 });
 
 // Health check
-app.get('/discord-health', (req, res) => {
+app.get('/api/discord-health', (req, res) => {
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     service: 'discord-bot-hosting',
     stripe: !!stripe,
-    memoryStore: sessionCredentialsStore.size
+    memoryStore: sessionCredentialsStore.size,
+    nodeId: !!nodeId,
+    eggId: !!discordEggId
   });
 });
 
@@ -1084,35 +1081,4 @@ const PORT = process.env.DISCORD_PORT || 3002;
 app.listen(PORT, () => {
   console.log(`\n🤖 Discord Bot Hosting Service running on port ${PORT}`);
   console.log('📍 Available endpoints:');
-  console.log('  GET  /discord-session-details/:sessionId - Get Discord bot session details');
-  console.log('  POST /create-discord-checkout-session - Create Discord bot checkout');
-  console.log('  POST /upload-discord-bot - Upload bot files');
-  console.log('  POST /discord-bot/:uuid/start - Start Discord bot');
-  console.log('  POST /discord-bot/:uuid/stop - Stop Discord bot');
-  console.log('  POST /discord-bot/:uuid/restart - Restart Discord bot');
-  console.log('  GET  /discord-bot/:uuid/status - Get bot status');
-  console.log('  GET  /discord-health - Health check');
-  
-  console.log('\n🔧 Supported Discord Bot Frameworks:');
-  console.log('  Node.js: Discord.js, Eris');
-  console.log('  Python: Discord.py, Py-cord');
-  console.log('  Java: JDA');
-  console.log('  C#: Discord.NET');
-  
-  if (!stripe || !nodeId || !process.env.PTERODACTYL_DISCORD_EGG_ID) {
-    console.log('\n⚠️ Discord bot creation partially disabled - missing environment variables');
-    if (!stripe) console.log('  - Stripe not configured');
-    if (!nodeId) console.log('  - PTERODACTYL_DISCORD_NODE_ID missing');
-    if (!process.env.PTERODACTYL_DISCORD_EGG_ID) console.log('  - PTERODACTYL_DISCORD_EGG_ID missing');
-  } else {
-    console.log('\n✅ Discord bot hosting enabled with full framework support');
-  }
-});
-
-module.exports = { 
-  app, 
-  CreateUser, 
-  createDiscordBotServer, 
-  generateRandomPassword,
-  getDiscordBotRuntime
-};
+  console.log('  GET  /api/discord-session-details/:sessionId');
