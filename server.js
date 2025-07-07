@@ -1,4 +1,4 @@
-// server.js - FIXED VERSION with proper Java version support
+// server.js - FIXED VERSION with proper billing intervals
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
@@ -627,7 +627,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
   }
 });
 
-// Create checkout session endpoint (unchanged)
+// FIXED: Create checkout session endpoint with proper billing intervals
 app.post('/create-checkout-session', async (req, res) => {
   try {
     if (!stripe) {
@@ -636,6 +636,7 @@ app.post('/create-checkout-session', async (req, res) => {
 
     const serverConfig = req.body.serverConfig || req.body;
     const planId = req.body.planId || req.body.plan;
+    const billingCycle = req.body.billingCycle || 'monthly';
 
     const { 
       serverName, 
@@ -647,21 +648,63 @@ app.post('/create-checkout-session', async (req, res) => {
       whitelist, 
       pvp, 
       plugins,
-      totalCost 
+      totalCost,
+      monthlyCost,
+      effectiveMonthlyRate,
+      discount,
+      savings
     } = serverConfig;
 
-    if (!serverName || !planId || !totalCost) {
+    if (!serverName || !planId || (!totalCost && !monthlyCost)) {
       return res.status(400).json({ 
-        error: 'Missing required fields: serverName, plan, and totalCost are required'
+        error: 'Missing required fields: serverName, plan, and totalCost/monthlyCost are required'
       });
     }
 
     console.log('💳 Creating Stripe checkout session:', {
       serverName,
       plan: planId,
+      billingCycle,
       totalCost,
+      monthlyCost,
+      effectiveMonthlyRate,
       minecraftVersion,
       serverType
+    });
+
+    // FIXED: Map billing cycles to Stripe intervals and calculate correct pricing
+    const billingIntervalMap = {
+      'monthly': { interval: 'month', interval_count: 1 },
+      'quarterly': { interval: 'month', interval_count: 3 },
+      'semiannual': { interval: 'month', interval_count: 6 },
+      'annual': { interval: 'year', interval_count: 1 }
+    };
+
+    const stripeInterval = billingIntervalMap[billingCycle] || billingIntervalMap['monthly'];
+    
+    // Calculate the correct amount based on billing cycle
+    let unitAmount;
+    let description;
+    
+    if (billingCycle === 'monthly') {
+      unitAmount = Math.round((monthlyCost || effectiveMonthlyRate || 9.99) * 100);
+      description = `Minecraft Server (${serverType} ${minecraftVersion}) - Monthly`;
+    } else {
+      // For non-monthly billing, use the total cost for the period
+      unitAmount = Math.round((totalCost || monthlyCost || 9.99) * 100);
+      const periodNames = {
+        'quarterly': '3 months',
+        'semiannual': '6 months', 
+        'annual': '12 months'
+      };
+      description = `Minecraft Server (${serverType} ${minecraftVersion}) - ${periodNames[billingCycle] || billingCycle}`;
+    }
+
+    console.log('💰 Stripe pricing calculation:', {
+      billingCycle,
+      stripeInterval,
+      unitAmount: unitAmount / 100,
+      description
     });
 
     const session = await stripe.checkout.sessions.create({
@@ -671,12 +714,13 @@ app.post('/create-checkout-session', async (req, res) => {
           currency: 'usd',
           product_data: {
             name: `${serverName} - ${planId.toUpperCase()} Plan`,
-            description: `Minecraft Server (${serverType} ${minecraftVersion})`
+            description: description
           },
           recurring: {
-            interval: 'month'
+            interval: stripeInterval.interval,
+            interval_count: stripeInterval.interval_count
           },
-          unit_amount: Math.round(parseFloat(totalCost || 9.99) * 100)
+          unit_amount: unitAmount
         },
         quantity: 1
       }],
@@ -693,11 +737,22 @@ app.post('/create-checkout-session', async (req, res) => {
         viewDistance: (viewDistance || 10).toString(),
         whitelist: (whitelist || false).toString(),
         pvp: (pvp !== false).toString(),
-        plugins: Array.isArray(plugins) ? plugins.join(',') : (plugins || 'none')
+        plugins: Array.isArray(plugins) ? plugins.join(',') : (plugins || 'none'),
+        billingCycle: billingCycle,
+        totalCost: (totalCost || 0).toString(),
+        monthlyCost: (monthlyCost || 0).toString(),
+        effectiveMonthlyRate: (effectiveMonthlyRate || 0).toString(),
+        discount: (discount || 0).toString(),
+        savings: (savings || 0).toString()
       }
     });
 
-    console.log('✅ Stripe session created:', session.id);
+    console.log('✅ Stripe session created:', {
+      sessionId: session.id,
+      billingCycle,
+      interval: stripeInterval,
+      amount: unitAmount / 100
+    });
 
     res.json({
       success: true,
