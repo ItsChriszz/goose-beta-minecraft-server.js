@@ -1,4 +1,4 @@
-// discord-server.js - Discord Bot Hosting Server
+// discord-server.js - COMPLETE Discord Bot Hosting Server with FIXED ROUTES
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
@@ -698,122 +698,12 @@ async function uploadDefaultFiles(serverUuid, files) {
   }
 }
 
-// API Endpoints with /api prefix for better organization
+// =============================================================================
+// MAIN ROUTES (Without /api prefix - For Frontend Compatibility)
+// =============================================================================
 
-// Get session details endpoint
-app.get('/api/discord-session-details/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    
-    if (!sessionId) {
-      return res.status(400).json({ error: 'Session ID is required' });
-    }
-
-    console.log(`\n🔍 Fetching Discord bot session details for: ${sessionId}`);
-
-    let session = null;
-    let metadata = {};
-
-    if (stripe) {
-      try {
-        session = await stripe.checkout.sessions.retrieve(sessionId);
-        metadata = session.metadata || {};
-        console.log('📋 Session found from Stripe:', {
-          id: session.id,
-          status: session.payment_status,
-          email: session.customer_details?.email,
-          hasCredentials: !!(metadata.serverUsername),
-          hasServer: !!(metadata.serverId)
-        });
-      } catch (stripeError) {
-        console.warn('⚠️ Failed to retrieve from Stripe:', stripeError.message);
-      }
-    }
-
-    const memoryData = sessionCredentialsStore.get(sessionId);
-    if (memoryData) {
-      console.log('💾 Found additional data in memory store');
-      metadata = { ...metadata, ...memoryData };
-    }
-
-    if (!session && !memoryData) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
-
-    if (!session && memoryData) {
-      session = {
-        id: sessionId,
-        payment_status: 'paid',
-        customer_details: { email: memoryData.ownerEmail },
-        metadata: memoryData
-      };
-    }
-
-    if (session.payment_status === 'paid' && !metadata.serverId) {
-      console.log('💰 Payment confirmed, creating Discord bot server...');
-      
-      try {
-        const serverResult = await createDiscordBotServer(session);
-        console.log('🎉 Discord bot server created successfully');
-        
-        metadata = { ...metadata, ...serverResult.credentials };
-        
-        return res.json({
-          success: true,
-          session: {
-            id: session.id,
-            status: session.payment_status,
-            customer_email: session.customer_details?.email,
-            metadata: metadata
-          },
-          server: {
-            id: serverResult.serverId,
-            uuid: serverResult.serverUuid,
-            type: 'discord-bot',
-            user: serverResult.user
-          },
-          message: 'Discord bot server created successfully'
-        });
-        
-      } catch (serverError) {
-        console.error('❌ Discord bot server creation failed:', serverError.message);
-        
-        return res.json({
-          success: false,
-          session: {
-            id: session.id,
-            status: session.payment_status,
-            customer_email: session.customer_details?.email,
-            metadata: metadata
-          },
-          error: `Discord bot server creation failed: ${serverError.message}`,
-          message: 'Payment successful but server creation failed'
-        });
-      }
-    }
-
-    return res.json({
-      success: true,
-      session: {
-        id: session.id,
-        status: session.payment_status,
-        customer_email: session.customer_details?.email,
-        metadata: metadata
-      },
-      message: session.payment_status === 'paid' ? 'Discord bot server already exists' : 'Payment pending'
-    });
-
-  } catch (error) {
-    console.error('❌ Discord session details error:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Create Discord bot checkout session endpoint
-app.post('/api/create-discord-checkout-session', async (req, res) => {
+// Create Discord bot checkout session endpoint - MAIN ROUTE
+app.post('/create-discord-checkout-session', async (req, res) => {
   try {
     if (!stripe) {
       return res.status(500).json({ error: 'Stripe not configured' });
@@ -946,8 +836,120 @@ app.post('/api/create-discord-checkout-session', async (req, res) => {
   }
 });
 
-// File upload endpoint for Discord bots
-app.post('/api/upload-discord-bot', upload.single('botFile'), async (req, res) => {
+// Get session details endpoint - MAIN ROUTE
+app.get('/discord-session-details/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Session ID is required' });
+    }
+
+    console.log(`\n🔍 Fetching Discord bot session details for: ${sessionId}`);
+
+    let session = null;
+    let metadata = {};
+
+    if (stripe) {
+      try {
+        session = await stripe.checkout.sessions.retrieve(sessionId);
+        metadata = session.metadata || {};
+        console.log('📋 Session found from Stripe:', {
+          id: session.id,
+          status: session.payment_status,
+          email: session.customer_details?.email,
+          hasCredentials: !!(metadata.serverUsername),
+          hasServer: !!(metadata.serverId)
+        });
+      } catch (stripeError) {
+        console.warn('⚠️ Failed to retrieve from Stripe:', stripeError.message);
+      }
+    }
+
+    const memoryData = sessionCredentialsStore.get(sessionId);
+    if (memoryData) {
+      console.log('💾 Found additional data in memory store');
+      metadata = { ...metadata, ...memoryData };
+    }
+
+    if (!session && !memoryData) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    if (!session && memoryData) {
+      session = {
+        id: sessionId,
+        payment_status: 'paid',
+        customer_details: { email: memoryData.ownerEmail },
+        metadata: memoryData
+      };
+    }
+
+    if (session.payment_status === 'paid' && !metadata.serverId) {
+      console.log('💰 Payment confirmed, creating Discord bot server...');
+      
+      try {
+        const serverResult = await createDiscordBotServer(session);
+        console.log('🎉 Discord bot server created successfully');
+        
+        metadata = { ...metadata, ...serverResult.credentials };
+        
+        return res.json({
+          success: true,
+          session: {
+            id: session.id,
+            status: session.payment_status,
+            customer_email: session.customer_details?.email,
+            metadata: metadata
+          },
+          server: {
+            id: serverResult.serverId,
+            uuid: serverResult.serverUuid,
+            type: 'discord-bot',
+            user: serverResult.user
+          },
+          message: 'Discord bot server created successfully'
+        });
+        
+      } catch (serverError) {
+        console.error('❌ Discord bot server creation failed:', serverError.message);
+        
+        return res.json({
+          success: false,
+          session: {
+            id: session.id,
+            status: session.payment_status,
+            customer_email: session.customer_details?.email,
+            metadata: metadata
+          },
+          error: `Discord bot server creation failed: ${serverError.message}`,
+          message: 'Payment successful but server creation failed'
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      session: {
+        id: session.id,
+        status: session.payment_status,
+        customer_email: session.customer_details?.email,
+        metadata: metadata
+      },
+      message: session.payment_status === 'paid' ? 'Discord bot server already exists' : 'Payment pending'
+    });
+
+  } catch (error) {
+    console.error('❌ Discord session details error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// File upload endpoint for Discord bots - MAIN ROUTE
+app.post('/upload-discord-bot', upload.single('botFile'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -1000,7 +1002,374 @@ app.post('/api/upload-discord-bot', upload.single('botFile'), async (req, res) =
   }
 });
 
-// Discord bot management endpoints
+// Discord bot management endpoints - MAIN ROUTES
+app.post('/discord-bot/:serverUuid/start', async (req, res) => {
+  try {
+    const { serverUuid } = req.params;
+    
+    await pterodactylRequest('POST', `/servers/${serverUuid}/power`, {
+      signal: 'start'
+    });
+    
+    res.json({ success: true, message: 'Discord bot starting' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/discord-bot/:serverUuid/stop', async (req, res) => {
+  try {
+    const { serverUuid } = req.params;
+    
+    await pterodactylRequest('POST', `/servers/${serverUuid}/power`, {
+      signal: 'stop'
+    });
+    
+    res.json({ success: true, message: 'Discord bot stopping' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/discord-bot/:serverUuid/restart', async (req, res) => {
+  try {
+    const { serverUuid } = req.params;
+    
+    await pterodactylRequest('POST', `/servers/${serverUuid}/power`, {
+      signal: 'restart'
+    });
+    
+    res.json({ success: true, message: 'Discord bot restarting' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get Discord bot status - MAIN ROUTE
+app.get('/discord-bot/:serverUuid/status', async (req, res) => {
+  try {
+    const { serverUuid } = req.params;
+    
+    const response = await pterodactylRequest('GET', `/servers/${serverUuid}/resources`);
+    const resources = response.data.attributes;
+    
+    res.json({
+      success: true,
+      status: resources.current_state,
+      cpu: resources.resources.cpu_absolute,
+      memory: resources.resources.memory_bytes,
+      uptime: resources.resources.uptime
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// =============================================================================
+// API ROUTES (With /api prefix - For Backward Compatibility)
+// =============================================================================
+
+// Create Discord bot checkout session endpoint - API ROUTE
+app.post('/api/create-discord-checkout-session', async (req, res) => {
+  try {
+    if (!stripe) {
+      return res.status(500).json({ error: 'Stripe not configured' });
+    }
+
+    const botConfig = req.body.botConfig || req.body;
+    const planId = req.body.planId || req.body.plan;
+    const billingCycle = req.body.billingCycle || 'monthly';
+
+    const { 
+      botName, 
+      language,
+      framework,
+      totalRam,
+      totalCost,
+      monthlyCost,
+      effectiveMonthlyRate,
+      discount,
+      savings,
+      discordToken
+    } = botConfig;
+
+    if (!botName || !planId || (!totalCost && !monthlyCost)) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: botName, plan, and totalCost/monthlyCost are required'
+      });
+    }
+
+    console.log('💳 Creating Discord bot Stripe checkout session (API):', {
+      botName,
+      plan: planId,
+      billingCycle,
+      totalCost,
+      monthlyCost,
+      effectiveMonthlyRate,
+      language,
+      framework
+    });
+
+    // Map billing cycles to Stripe intervals
+    const billingIntervalMap = {
+      'monthly': { interval: 'month', interval_count: 1 },
+      'quarterly': { interval: 'month', interval_count: 3 },
+      'semiannual': { interval: 'month', interval_count: 6 },
+      'annual': { interval: 'year', interval_count: 1 }
+    };
+
+    const stripeInterval = billingIntervalMap[billingCycle] || billingIntervalMap['monthly'];
+    
+    // Calculate the correct amount based on billing cycle
+    let unitAmount;
+    let description;
+    
+    if (billingCycle === 'monthly') {
+      unitAmount = Math.round((monthlyCost || effectiveMonthlyRate || 3.99) * 100);
+      description = `Discord Bot (${language}/${framework}) - Monthly`;
+    } else {
+      unitAmount = Math.round((totalCost || monthlyCost || 3.99) * 100);
+      const periodNames = {
+        'quarterly': '3 months',
+        'semiannual': '6 months', 
+        'annual': '12 months'
+      };
+      description = `Discord Bot (${language}/${framework}) - ${periodNames[billingCycle] || billingCycle}`;
+    }
+
+    console.log('💰 Stripe pricing calculation (API):', {
+      billingCycle,
+      stripeInterval,
+      unitAmount: unitAmount / 100,
+      description
+    });
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: {
+            name: `${botName} - ${planId.toUpperCase()} Discord Bot`,
+            description: description
+          },
+          recurring: {
+            interval: stripeInterval.interval,
+            interval_count: stripeInterval.interval_count
+          },
+          unit_amount: unitAmount
+        },
+        quantity: 1
+      }],
+      mode: 'subscription',
+      success_url: `https://beta.goosehosting.com/discord-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `https://beta.goosehosting.com/cancel`,
+      metadata: {
+        botName: botName || 'Unnamed Bot',
+        plan: planId || 'starter',
+        language: language || 'nodejs',
+        framework: framework || 'discord.js',
+        totalRam: (totalRam || 512).toString(),
+        billingCycle: billingCycle,
+        totalCost: (totalCost || 0).toString(),
+        monthlyCost: (monthlyCost || 0).toString(),
+        effectiveMonthlyRate: (effectiveMonthlyRate || 0).toString(),
+        discount: (discount || 0).toString(),
+        savings: (savings || 0).toString(),
+        discordToken: discordToken || '',
+        serviceType: 'discord-bot'
+      }
+    });
+
+    console.log('✅ Discord bot Stripe session created (API):', {
+      sessionId: session.id,
+      billingCycle,
+      interval: stripeInterval,
+      amount: unitAmount / 100
+    });
+
+    res.json({
+      success: true,
+      sessionId: session.id,
+      url: session.url
+    });
+
+  } catch (error) {
+    console.error('❌ Discord bot Stripe checkout error (API):', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get session details endpoint - API ROUTE
+app.get('/api/discord-session-details/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Session ID is required' });
+    }
+
+    console.log(`\n🔍 Fetching Discord bot session details (API) for: ${sessionId}`);
+
+    let session = null;
+    let metadata = {};
+
+    if (stripe) {
+      try {
+        session = await stripe.checkout.sessions.retrieve(sessionId);
+        metadata = session.metadata || {};
+        console.log('📋 Session found from Stripe (API):', {
+          id: session.id,
+          status: session.payment_status,
+          email: session.customer_details?.email,
+          hasCredentials: !!(metadata.serverUsername),
+          hasServer: !!(metadata.serverId)
+        });
+      } catch (stripeError) {
+        console.warn('⚠️ Failed to retrieve from Stripe (API):', stripeError.message);
+      }
+    }
+
+    const memoryData = sessionCredentialsStore.get(sessionId);
+    if (memoryData) {
+      console.log('💾 Found additional data in memory store (API)');
+      metadata = { ...metadata, ...memoryData };
+    }
+
+    if (!session && !memoryData) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    if (!session && memoryData) {
+      session = {
+        id: sessionId,
+        payment_status: 'paid',
+        customer_details: { email: memoryData.ownerEmail },
+        metadata: memoryData
+      };
+    }
+
+    if (session.payment_status === 'paid' && !metadata.serverId) {
+      console.log('💰 Payment confirmed, creating Discord bot server (API)...');
+      
+      try {
+        const serverResult = await createDiscordBotServer(session);
+        console.log('🎉 Discord bot server created successfully (API)');
+        
+        metadata = { ...metadata, ...serverResult.credentials };
+        
+        return res.json({
+          success: true,
+          session: {
+            id: session.id,
+            status: session.payment_status,
+            customer_email: session.customer_details?.email,
+            metadata: metadata
+          },
+          server: {
+            id: serverResult.serverId,
+            uuid: serverResult.serverUuid,
+            type: 'discord-bot',
+            user: serverResult.user
+          },
+          message: 'Discord bot server created successfully'
+        });
+        
+      } catch (serverError) {
+        console.error('❌ Discord bot server creation failed (API):', serverError.message);
+        
+        return res.json({
+          success: false,
+          session: {
+            id: session.id,
+            status: session.payment_status,
+            customer_email: session.customer_details?.email,
+            metadata: metadata
+          },
+          error: `Discord bot server creation failed: ${serverError.message}`,
+          message: 'Payment successful but server creation failed'
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      session: {
+        id: session.id,
+        status: session.payment_status,
+        customer_email: session.customer_details?.email,
+        metadata: metadata
+      },
+      message: session.payment_status === 'paid' ? 'Discord bot server already exists' : 'Payment pending'
+    });
+
+  } catch (error) {
+    console.error('❌ Discord session details error (API):', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// File upload endpoint for Discord bots - API ROUTE
+app.post('/api/upload-discord-bot', upload.single('botFile'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const { serverUuid } = req.body;
+    if (!serverUuid) {
+      return res.status(400).json({ error: 'Server UUID is required' });
+    }
+
+    console.log('📁 Uploading Discord bot file (API):', {
+      filename: req.file.originalname,
+      size: req.file.size,
+      serverUuid: serverUuid
+    });
+
+    // Read the uploaded file
+    const fileContent = fs.readFileSync(req.file.path, 'utf8');
+    
+    // Upload to Pterodactyl server
+    await pterodactylRequest('POST', `/servers/${serverUuid}/files/write`, {
+      root: '/',
+      files: [{
+        name: req.file.originalname,
+        content: fileContent
+      }]
+    });
+
+    // Clean up uploaded file
+    fs.unlinkSync(req.file.path);
+
+    res.json({
+      success: true,
+      message: 'File uploaded successfully',
+      filename: req.file.originalname
+    });
+
+  } catch (error) {
+    console.error('❌ File upload error (API):', error.message);
+    
+    // Clean up file if it exists
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Discord bot management endpoints - API ROUTES
 app.post('/api/discord-bot/:serverUuid/start', async (req, res) => {
   try {
     const { serverUuid } = req.params;
@@ -1043,7 +1412,7 @@ app.post('/api/discord-bot/:serverUuid/restart', async (req, res) => {
   }
 });
 
-// Get Discord bot status
+// Get Discord bot status - API ROUTE
 app.get('/api/discord-bot/:serverUuid/status', async (req, res) => {
   try {
     const { serverUuid } = req.params;
@@ -1063,8 +1432,12 @@ app.get('/api/discord-bot/:serverUuid/status', async (req, res) => {
   }
 });
 
+// =============================================================================
+// SHARED UTILITY ROUTES
+// =============================================================================
+
 // Health check
-app.get('/api/discord-health', (req, res) => {
+app.get('/discord-health', (req, res) => {
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
@@ -1076,9 +1449,94 @@ app.get('/api/discord-health', (req, res) => {
   });
 });
 
+// API Health check
+app.get('/api/discord-health', (req, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    service: 'discord-bot-hosting-api',
+    stripe: !!stripe,
+    memoryStore: sessionCredentialsStore.size,
+    nodeId: !!nodeId,
+    eggId: !!discordEggId
+  });
+});
+
+// Webhook endpoint for Stripe
+app.post('/discord-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe) {
+    return res.status(400).json({ error: 'Stripe not configured' });
+  }
+
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('⚠️ Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  console.log('📨 Discord webhook received:', event.type);
+
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed':
+        const session = event.data.object;
+        if (session.metadata?.serviceType === 'discord-bot') {
+          console.log('💳 Discord bot payment completed:', session.id);
+          // Server creation will be handled when session details are requested
+        }
+        break;
+
+      case 'invoice.payment_succeeded':
+        console.log('💰 Discord bot subscription payment succeeded');
+        break;
+
+      case 'customer.subscription.deleted':
+        console.log('🔴 Discord bot subscription cancelled');
+        // Handle subscription cancellation
+        break;
+
+      default:
+        console.log(`🔔 Unhandled Discord webhook event type: ${event.type}`);
+    }
+
+    res.json({ received: true });
+  } catch (error) {
+    console.error('❌ Discord webhook processing error:', error.message);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
 // Start server
 const PORT = process.env.DISCORD_PORT || 3002;
 app.listen(PORT, () => {
   console.log(`\n🤖 Discord Bot Hosting Service running on port ${PORT}`);
   console.log('📍 Available endpoints:');
+  console.log('  POST /create-discord-checkout-session');
+  console.log('  GET  /discord-session-details/:sessionId');
+  console.log('  POST /upload-discord-bot');
+  console.log('  POST /discord-bot/:uuid/start');
+  console.log('  POST /discord-bot/:uuid/stop');
+  console.log('  POST /discord-bot/:uuid/restart');
+  console.log('  GET  /discord-bot/:uuid/status');
+  console.log('  GET  /discord-health');
+  console.log('  POST /discord-webhook');
+  console.log('\n📍 API endpoints (with /api prefix):');
+  console.log('  POST /api/create-discord-checkout-session');
   console.log('  GET  /api/discord-session-details/:sessionId');
+  console.log('  POST /api/upload-discord-bot');
+  console.log('  POST /api/discord-bot/:uuid/start');
+  console.log('  POST /api/discord-bot/:uuid/stop');
+  console.log('  POST /api/discord-bot/:uuid/restart');
+  console.log('  GET  /api/discord-bot/:uuid/status');
+  console.log('  GET  /api/discord-health');
+  
+  console.log('\n🔧 Configuration:');
+  console.log(`  Stripe: ${stripe ? '✅ Configured' : '❌ Not configured'}`);
+  console.log(`  Node ID: ${nodeId ? '✅ Set' : '❌ Missing'}`);
+  console.log(`  Egg ID: ${discordEggId ? '✅ Set' : '❌ Missing'}`);
+  console.log(`  Memory Store: ${sessionCredentialsStore.size} sessions cached`);
+});
