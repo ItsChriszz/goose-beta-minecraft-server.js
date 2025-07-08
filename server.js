@@ -1,4 +1,4 @@
-// server.js - FIXED VERSION with proper billing intervals
+// server.js - COMPLETE FIXED VERSION with webhook endpoint
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
@@ -20,11 +20,7 @@ try {
 
 const app = express();
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// CORS
+// CORS - MUST be before webhook route
 app.use((req, res, next) => {
   const allowedOrigins = [
     'https://beta.goosehosting.com',
@@ -48,6 +44,151 @@ app.use((req, res, next) => {
     next();
   }
 });
+
+// CRITICAL: Webhook route MUST be defined BEFORE express.json() middleware
+app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  
+  // Get webhook secret from environment
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  
+  if (!webhookSecret) {
+    console.error('❌ STRIPE_WEBHOOK_SECRET not configured');
+    return res.status(400).send('Webhook secret not configured');
+  }
+
+  if (!stripe) {
+    console.error('❌ Stripe not initialized');
+    return res.status(500).send('Stripe not available');
+  }
+
+  let event;
+
+  try {
+    // Verify the webhook signature
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    console.log('✅ Webhook signature verified for event:', event.type);
+  } catch (err) {
+    console.error('❌ Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  console.log('📥 Webhook Event Received:', {
+    type: event.type,
+    id: event.id,
+    created: new Date(event.created * 1000).toISOString()
+  });
+
+  // Handle the event
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed':
+        const checkoutSession = event.data.object;
+        console.log('💳 Checkout Session Completed:', {
+          sessionId: checkoutSession.id,
+          customerEmail: checkoutSession.customer_details?.email,
+          amountTotal: checkoutSession.amount_total,
+          currency: checkoutSession.currency,
+          paymentStatus: checkoutSession.payment_status
+        });
+
+        // If payment was successful, the server creation will happen
+        // when the frontend calls /session-details/:sessionId
+        if (checkoutSession.payment_status === 'paid') {
+          console.log('✅ Payment successful - server will be created on session details request');
+        }
+        break;
+
+      case 'invoice.payment_succeeded':
+        const invoice = event.data.object;
+        console.log('💰 Invoice Payment Succeeded:', {
+          invoiceId: invoice.id,
+          customerEmail: invoice.customer_email,
+          amountPaid: invoice.amount_paid,
+          subscriptionId: invoice.subscription,
+          billingReason: invoice.billing_reason
+        });
+
+        // Handle subscription renewals
+        if (invoice.billing_reason === 'subscription_cycle') {
+          console.log('🔄 Subscription renewal payment received');
+          // You could extend server here or send renewal notifications
+        }
+        break;
+
+      case 'invoice.payment_failed':
+        const failedInvoice = event.data.object;
+        console.log('❌ Invoice Payment Failed:', {
+          invoiceId: failedInvoice.id,
+          customerEmail: failedInvoice.customer_email,
+          attemptCount: failedInvoice.attempt_count,
+          subscriptionId: failedInvoice.subscription
+        });
+
+        // Handle failed payments - could pause server, send notifications, etc.
+        if (failedInvoice.attempt_count >= 3) {
+          console.log('⚠️ Multiple payment failures - consider suspending service');
+        }
+        break;
+
+      case 'customer.subscription.created':
+        const subscription = event.data.object;
+        console.log('🆕 Subscription Created:', {
+          subscriptionId: subscription.id,
+          customerId: subscription.customer,
+          status: subscription.status,
+          currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString()
+        });
+        break;
+
+      case 'customer.subscription.updated':
+        const updatedSubscription = event.data.object;
+        console.log('🔄 Subscription Updated:', {
+          subscriptionId: updatedSubscription.id,
+          status: updatedSubscription.status,
+          previousAttributes: event.data.previous_attributes
+        });
+        break;
+
+      case 'customer.subscription.deleted':
+        const deletedSubscription = event.data.object;
+        console.log('🗑️ Subscription Cancelled:', {
+          subscriptionId: deletedSubscription.id,
+          customerId: deletedSubscription.customer,
+          canceledAt: new Date(deletedSubscription.canceled_at * 1000).toISOString()
+        });
+        
+        // Handle subscription cancellation - could suspend server
+        console.log('⚠️ Subscription cancelled - consider suspending server access');
+        break;
+
+      case 'payment_method.attached':
+        console.log('💳 Payment method attached to customer');
+        break;
+
+      default:
+        console.log(`🤷‍♂️ Unhandled event type: ${event.type}`);
+    }
+
+    // Always respond with success to acknowledge receipt
+    res.json({ received: true, eventType: event.type });
+
+  } catch (error) {
+    console.error('❌ Error processing webhook:', error.message);
+    
+    // Still return 200 to prevent Stripe from retrying
+    // Log the error for investigation
+    res.json({ 
+      received: true, 
+      error: error.message,
+      eventType: event.type 
+    });
+  }
+});
+
+// Regular middleware - MUST come AFTER webhook route
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Environment validation
 const validateEnvVars = () => {
@@ -191,7 +332,7 @@ const pterodactylRequest = async (method, endpoint, data = null) => {
   }
 };
 
-// Username and password generators (unchanged)
+// Username and password generators
 function generateUsernameFromEmail(email) {
   let username = email.split('@')[0]
     .replace(/[^a-z0-9]/gi, '')
@@ -228,7 +369,7 @@ function generateRandomPassword(length = 16) {
   return password.split('').sort(() => 0.5 - Math.random()).join('');
 }
 
-// Create User function (unchanged)
+// Create User function
 const CreateUser = async (email) => {
   if (!email || typeof email !== 'string') {
     throw new Error('Email must be a valid string');
@@ -317,7 +458,7 @@ const CreateUser = async (email) => {
 // In-memory session store
 const sessionCredentialsStore = new Map();
 
-// FIXED: Create Pterodactyl Server with proper Java version support
+// Create Pterodactyl Server with proper Java version support
 async function createPterodactylServer(session) {
   if (!nodeId || !process.env.PTERODACTYL_EGG_ID) {
     throw new Error('Server creation requires PTERODACTYL_NODE_ID and PTERODACTYL_EGG_ID');
@@ -515,7 +656,7 @@ async function createPterodactylServer(session) {
   }
 }
 
-// Get session details endpoint (unchanged except for better logging)
+// Get session details endpoint
 app.get('/session-details/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -627,7 +768,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
   }
 });
 
-// FIXED: Create checkout session endpoint with proper billing intervals
+// Create checkout session endpoint with proper billing intervals
 app.post('/create-checkout-session', async (req, res) => {
   try {
     if (!stripe) {
@@ -672,7 +813,7 @@ app.post('/create-checkout-session', async (req, res) => {
       serverType
     });
 
-    // FIXED: Map billing cycles to Stripe intervals and calculate correct pricing
+    // Map billing cycles to Stripe intervals and calculate correct pricing
     const billingIntervalMap = {
       'monthly': { interval: 'month', interval_count: 1 },
       'quarterly': { interval: 'month', interval_count: 3 },
@@ -776,6 +917,7 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     service: 'combined-user-server-management',
     stripe: !!stripe,
+    webhookSecret: !!process.env.STRIPE_WEBHOOK_SECRET,
     memoryStore: sessionCredentialsStore.size
   });
 });
@@ -785,6 +927,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`\n🚀 Combined User & Server Management Service running on port ${PORT}`);
   console.log('📍 Available endpoints:');
+  console.log('  POST /webhook - Stripe webhook handler');
   console.log('  GET  /session-details/:sessionId - Get session and server details');
   console.log('  POST /create-checkout-session - Create Stripe checkout');
   console.log('  GET  /health - Health check');
@@ -796,6 +939,12 @@ app.listen(PORT, () => {
   console.log('  Minecraft 1.12-1.15 → Java 11');
   console.log('  Minecraft 1.8-1.11 → Java 8');
   
+  console.log('\n🔧 Configuration Status:');
+  console.log('  Stripe:', stripe ? '✅ Initialized' : '❌ Not configured');
+  console.log('  Webhook Secret:', process.env.STRIPE_WEBHOOK_SECRET ? '✅ Set' : '❌ Missing');
+  console.log('  Node ID:', nodeId ? '✅ Set' : '❌ Missing');
+  console.log('  Egg ID:', process.env.PTERODACTYL_EGG_ID ? '✅ Set' : '❌ Missing');
+  
   if (!stripe || !nodeId || !process.env.PTERODACTYL_EGG_ID) {
     console.log('\n⚠️ Server creation partially disabled - missing environment variables');
     if (!stripe) console.log('  - Stripe not configured');
@@ -803,6 +952,13 @@ app.listen(PORT, () => {
     if (!process.env.PTERODACTYL_EGG_ID) console.log('  - PTERODACTYL_EGG_ID missing');
   } else {
     console.log('\n✅ Server creation enabled with proper Java version support');
+  }
+  
+  if (!process.env.STRIPE_WEBHOOK_SECRET) {
+    console.log('\n⚠️ STRIPE_WEBHOOK_SECRET missing - webhooks will fail');
+    console.log('   Add STRIPE_WEBHOOK_SECRET=whsec_... to your environment');
+  } else {
+    console.log('\n✅ Webhook endpoint ready at /webhook');
   }
 });
 
