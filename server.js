@@ -1,10 +1,14 @@
-// server.js - COMPLETE FIXED VERSION with webhook endpoint
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const panelServerRouter = require('./panelServer');
+const { authMiddleware } = require('./authMiddleware');
+app.use('/api/panel', authMiddleware, panelServerRouter);
 
-// Fix: Initialize Stripe properly with error handling
-let stripe;
+require('dotenv').config();
+
+
 try {
   if (!process.env.STRIPE_SECRET_KEY) {
     console.warn('⚠️ STRIPE_SECRET_KEY not found in environment variables');
@@ -20,7 +24,6 @@ try {
 
 const app = express();
 
-// CORS - MUST be before webhook route
 app.use((req, res, next) => {
   const allowedOrigins = [
     'https://beta.goosehosting.com',
@@ -45,11 +48,9 @@ app.use((req, res, next) => {
   }
 });
 
-// CRITICAL: Webhook route MUST be defined BEFORE express.json() middleware
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   
-  // Get webhook secret from environment
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   
   if (!webhookSecret) {
@@ -65,7 +66,6 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
   let event;
 
   try {
-    // Verify the webhook signature
     event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
     console.log('✅ Webhook signature verified for event:', event.type);
   } catch (err) {
@@ -73,18 +73,17 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  console.log('📥 Webhook Event Received:', {
+  console.log(' Webhook Event Received:', {
     type: event.type,
     id: event.id,
     created: new Date(event.created * 1000).toISOString()
   });
 
-  // Handle the event
   try {
     switch (event.type) {
       case 'checkout.session.completed':
         const checkoutSession = event.data.object;
-        console.log('💳 Checkout Session Completed:', {
+        console.log('Checkout Session Completed:', {
           sessionId: checkoutSession.id,
           customerEmail: checkoutSession.customer_details?.email,
           amountTotal: checkoutSession.amount_total,
@@ -92,8 +91,6 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
           paymentStatus: checkoutSession.payment_status
         });
 
-        // If payment was successful, the server creation will happen
-        // when the frontend calls /session-details/:sessionId
         if (checkoutSession.payment_status === 'paid') {
           console.log('✅ Payment successful - server will be created on session details request');
         }
@@ -101,7 +98,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 
       case 'invoice.payment_succeeded':
         const invoice = event.data.object;
-        console.log('💰 Invoice Payment Succeeded:', {
+        console.log('Invoice Payment Succeeded:', {
           invoiceId: invoice.id,
           customerEmail: invoice.customer_email,
           amountPaid: invoice.amount_paid,
@@ -109,10 +106,8 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
           billingReason: invoice.billing_reason
         });
 
-        // Handle subscription renewals
         if (invoice.billing_reason === 'subscription_cycle') {
           console.log('🔄 Subscription renewal payment received');
-          // You could extend server here or send renewal notifications
         }
         break;
 
@@ -125,7 +120,6 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
           subscriptionId: failedInvoice.subscription
         });
 
-        // Handle failed payments - could pause server, send notifications, etc.
         if (failedInvoice.attempt_count >= 3) {
           console.log('⚠️ Multiple payment failures - consider suspending service');
         }
@@ -133,7 +127,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 
       case 'customer.subscription.created':
         const subscription = event.data.object;
-        console.log('🆕 Subscription Created:', {
+        console.log('Subscription Created:', {
           subscriptionId: subscription.id,
           customerId: subscription.customer,
           status: subscription.status,
@@ -143,7 +137,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 
       case 'customer.subscription.updated':
         const updatedSubscription = event.data.object;
-        console.log('🔄 Subscription Updated:', {
+        console.log(' Subscription Updated:', {
           subscriptionId: updatedSubscription.id,
           status: updatedSubscription.status,
           previousAttributes: event.data.previous_attributes
@@ -152,32 +146,29 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 
       case 'customer.subscription.deleted':
         const deletedSubscription = event.data.object;
-        console.log('🗑️ Subscription Cancelled:', {
+        console.log(' Subscription Cancelled:', {
           subscriptionId: deletedSubscription.id,
           customerId: deletedSubscription.customer,
           canceledAt: new Date(deletedSubscription.canceled_at * 1000).toISOString()
         });
         
-        // Handle subscription cancellation - could suspend server
-        console.log('⚠️ Subscription cancelled - consider suspending server access');
+        console.log('Subscription cancelled - consider suspending server access');
         break;
 
       case 'payment_method.attached':
-        console.log('💳 Payment method attached to customer');
+        console.log('Payment method attached to customer');
         break;
 
       default:
-        console.log(`🤷‍♂️ Unhandled event type: ${event.type}`);
+        console.log(` Unhandled event type: ${event.type}`);
     }
 
-    // Always respond with success to acknowledge receipt
     res.json({ received: true, eventType: event.type });
 
   } catch (error) {
     console.error('❌ Error processing webhook:', error.message);
     
-    // Still return 200 to prevent Stripe from retrying
-    // Log the error for investigation
+
     res.json({ 
       received: true, 
       error: error.message,
@@ -186,11 +177,9 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
   }
 });
 
-// Regular middleware - MUST come AFTER webhook route
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Environment validation
 const validateEnvVars = () => {
   const requiredVars = [
     'PTERODACTYL_API_URL',
@@ -206,16 +195,13 @@ const validateEnvVars = () => {
 
 validateEnvVars();
 
-// Pterodactyl configuration
 const PTERODACTYL_BASE = process.env.PTERODACTYL_API_URL;
 const PTERODACTYL_API_KEY = process.env.PTERODACTYL_API_KEY;
 const nodeId = process.env.PTERODACTYL_NODE_ID;
 
-// FIXED: Java version mapping for Minecraft versions (Updated for Java 21 LTS)
 const getJavaVersionForMinecraft = (minecraftVersion) => {
   if (!minecraftVersion) return { java: 21, image: 'ghcr.io/pterodactyl/yolks:java_21' };
   
-  // Parse version string to compare properly
   const parseVersion = (version) => {
     const parts = version.replace(/[^0-9.]/g, '').split('.').map(Number);
     return {
@@ -229,7 +215,6 @@ const getJavaVersionForMinecraft = (minecraftVersion) => {
   
   console.log(`🔍 Determining Java version for Minecraft ${minecraftVersion}:`, version);
   
-  // Minecraft 1.20.5+ works best with Java 21 (latest LTS)
   if (version.major > 1 || (version.major === 1 && version.minor >= 21)) {
     console.log('✅ Using Java 21 for Minecraft 1.21+');
     return {
@@ -239,7 +224,6 @@ const getJavaVersionForMinecraft = (minecraftVersion) => {
     };
   }
   
-  // Minecraft 1.20.x works well with Java 21 but also supports Java 17
   if (version.major === 1 && version.minor === 20) {
     console.log('✅ Using Java 21 for Minecraft 1.20.x (optimal performance)');
     return {
@@ -249,7 +233,6 @@ const getJavaVersionForMinecraft = (minecraftVersion) => {
     };
   }
   
-  // Minecraft 1.17-1.19 requires Java 17+, but Java 21 works better
   if (version.major === 1 && version.minor >= 17 && version.minor <= 19) {
     console.log('✅ Using Java 21 for Minecraft 1.17-1.19 (backwards compatible)');
     return {
@@ -259,7 +242,6 @@ const getJavaVersionForMinecraft = (minecraftVersion) => {
     };
   }
   
-  // Minecraft 1.16.x requires Java 11+ (but Java 17 is better)
   if (version.major === 1 && version.minor === 16) {
     console.log('✅ Using Java 17 for Minecraft 1.16.x');
     return {
@@ -269,7 +251,6 @@ const getJavaVersionForMinecraft = (minecraftVersion) => {
     };
   }
   
-  // Minecraft 1.12-1.15 works with Java 8, but Java 11 is more stable
   if (version.major === 1 && version.minor >= 12 && version.minor <= 15) {
     console.log('✅ Using Java 11 for Minecraft 1.12-1.15 (better stability)');
     return {
@@ -279,7 +260,6 @@ const getJavaVersionForMinecraft = (minecraftVersion) => {
     };
   }
   
-  // Older versions (1.8-1.11) need Java 8 for compatibility
   if (version.major === 1 && version.minor >= 8 && version.minor <= 11) {
     console.log('✅ Using Java 8 for Minecraft 1.8-1.11 (required for compatibility)');
     return {
@@ -289,7 +269,6 @@ const getJavaVersionForMinecraft = (minecraftVersion) => {
     };
   }
   
-  // Default to Java 21 for unknown/latest versions (future-proof)
   console.log('⚠️ Unknown version, defaulting to Java 21 (latest LTS)');
   return {
     java: 21,
@@ -298,7 +277,6 @@ const getJavaVersionForMinecraft = (minecraftVersion) => {
   };
 };
 
-// Helper function for Pterodactyl API requests
 const pterodactylRequest = async (method, endpoint, data = null) => {
   const config = {
     method,
@@ -315,7 +293,7 @@ const pterodactylRequest = async (method, endpoint, data = null) => {
     config.data = data;
   }
   
-  console.log(`📡 ${method} ${config.url}`);
+  console.log(`${method} ${config.url}`);
   
   try {
     const response = await axios(config);
@@ -332,7 +310,6 @@ const pterodactylRequest = async (method, endpoint, data = null) => {
   }
 };
 
-// Username and password generators
 function generateUsernameFromEmail(email) {
   let username = email.split('@')[0]
     .replace(/[^a-z0-9]/gi, '')
@@ -369,7 +346,6 @@ function generateRandomPassword(length = 16) {
   return password.split('').sort(() => 0.5 - Math.random()).join('');
 }
 
-// Create User function
 const CreateUser = async (email) => {
   if (!email || typeof email !== 'string') {
     throw new Error('Email must be a valid string');
@@ -384,7 +360,6 @@ const CreateUser = async (email) => {
   try {
     console.log(`Starting user creation for: ${email}`);
 
-    // Check for existing user
     const searchUrl = `${PTERODACTYL_BASE}/users?filter[email]=${encodeURIComponent(email)}`;
     const searchResponse = await axios.get(searchUrl, {
       headers: {
@@ -408,7 +383,6 @@ const CreateUser = async (email) => {
       };
     }
 
-    // Generate credentials and create user
     const username = generateUsernameFromEmail(email);
     const password = generateRandomPassword(16);
     console.log(`Generated credentials - Username: ${username}`);
@@ -455,17 +429,15 @@ const CreateUser = async (email) => {
   }
 };
 
-// In-memory session store
 const sessionCredentialsStore = new Map();
 
-// Create Pterodactyl Server with proper Java version support
 async function createPterodactylServer(session) {
   if (!nodeId || !process.env.PTERODACTYL_EGG_ID) {
     throw new Error('Server creation requires PTERODACTYL_NODE_ID and PTERODACTYL_EGG_ID');
   }
 
   try {
-    console.log('🚀 Starting server creation process');
+    console.log('Starting server creation process');
     
     const customerEmail = session.customer_details?.email || 
                         session.customer_email || 
@@ -476,28 +448,24 @@ async function createPterodactylServer(session) {
       throw new Error('Valid customer email is required');
     }
     
-    console.log('📧 Using customer email:', customerEmail);
+    console.log('Using customer email:', customerEmail);
     
-    // STEP 1: Create or find user
     const userResult = await CreateUser(customerEmail);
-    console.log('👤 User result:', {
+    console.log('User result:', {
       id: userResult.userId,
       username: userResult.username,
       existing: userResult.existing,
       hasPassword: !!userResult.password
     });
     
-    // STEP 2: Extract server settings from session metadata
     const serverName = session.metadata?.serverName || `Server-${Date.now()}`;
     const totalRam = parseInt(session.metadata?.totalRam) || 4;
     const minecraftVersion = session.metadata?.minecraftVersion || '1.21.4';
     const serverType = session.metadata?.serverType || 'paper';
     
-    // STEP 3: Get correct Java version and Docker image
     const javaConfig = getJavaVersionForMinecraft(minecraftVersion);
-    console.log('☕ Java configuration:', javaConfig);
+    console.log(' Java configuration:', javaConfig);
     
-    // STEP 4: Get available allocation
     const allocRes = await pterodactylRequest('GET', `/nodes/${nodeId}/allocations`);
     const availableAllocations = allocRes.data.data.filter(a => !a.attributes.assigned);
     
@@ -506,15 +474,14 @@ async function createPterodactylServer(session) {
     }
     
     const allocation = availableAllocations[0];
-    console.log(`🎯 Using allocation: ${allocation.attributes.id}`);
+    console.log(` Using allocation: ${allocation.attributes.id}`);
     
-    // STEP 5: Create server with correct Java configuration
     const serverData = {
       name: serverName,
       user: parseInt(userResult.userId),
       egg: parseInt(process.env.PTERODACTYL_EGG_ID),
-      docker_image: javaConfig.image, // Use correct Java image
-      startup: javaConfig.startup,     // Use correct startup command
+      docker_image: javaConfig.image,
+      startup: javaConfig.startup,   
       environment: {
         SERVER_JARFILE: 'server.jar',
         SERVER_MEMORY: totalRam * 1024,
@@ -522,8 +489,8 @@ async function createPterodactylServer(session) {
         EULA: 'true',
         BUILD_NUMBER: 'latest',
         VERSION: minecraftVersion,
-        SERVER_TYPE: serverType.toUpperCase(), // PAPER, SPIGOT, etc.
-        JAVA_VERSION: javaConfig.java.toString() // Store Java version for reference
+        SERVER_TYPE: serverType.toUpperCase(), 
+        JAVA_VERSION: javaConfig.java.toString()
       },
       limits: {
         memory: totalRam * 1024,
@@ -566,7 +533,7 @@ async function createPterodactylServer(session) {
     const serverUuid = response.data.attributes.uuid;
     const serverAddress = `mc.goosehosting.com:${allocation.attributes.port}`;
     
-    console.log('🎉 Server created successfully:', {
+    console.log('Server created successfully:', {
       id: serverId,
       uuid: serverUuid,
       address: serverAddress,
@@ -574,7 +541,6 @@ async function createPterodactylServer(session) {
       image: javaConfig.image
     });
     
-    // STEP 6: Prepare credentials and server info
     const serverInfo = {
       serverId: serverId,
       serverUuid: serverUuid,
@@ -590,7 +556,6 @@ async function createPterodactylServer(session) {
       serverType: serverType
     };
 
-    // Only add credentials for new users
     if (!userResult.existing && userResult.password) {
       serverInfo.serverUsername = userResult.username;
       serverInfo.serverPassword = userResult.password;
@@ -600,7 +565,6 @@ async function createPterodactylServer(session) {
       serverInfo.ftpPassword = userResult.password;
     }
 
-    // STEP 7: Try to update Stripe session
     if (stripe && session.id) {
       try {
         console.log('🔄 Attempting to update Stripe session metadata...');
@@ -651,12 +615,11 @@ async function createPterodactylServer(session) {
     };
     
   } catch (err) {
-    console.error('❌ Server creation failed:', err.message);
+    console.error('Server creation failed:', err.message);
     throw err;
   }
 }
 
-// Get session details endpoint
 app.get('/session-details/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -665,7 +628,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
       return res.status(400).json({ error: 'Session ID is required' });
     }
 
-    console.log(`\n🔍 Fetching session details for: ${sessionId}`);
+    console.log(`\nFetching session details for: ${sessionId}`);
 
     let session = null;
     let metadata = {};
@@ -674,7 +637,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
       try {
         session = await stripe.checkout.sessions.retrieve(sessionId);
         metadata = session.metadata || {};
-        console.log('📋 Session found from Stripe:', {
+        console.log('Session found from Stripe:', {
           id: session.id,
           status: session.payment_status,
           email: session.customer_details?.email,
@@ -682,13 +645,13 @@ app.get('/session-details/:sessionId', async (req, res) => {
           hasServer: !!(metadata.serverId)
         });
       } catch (stripeError) {
-        console.warn('⚠️ Failed to retrieve from Stripe:', stripeError.message);
+        console.warn('⚠Failed to retrieve from Stripe:', stripeError.message);
       }
     }
 
     const memoryData = sessionCredentialsStore.get(sessionId);
     if (memoryData) {
-      console.log('💾 Found additional data in memory store');
+      console.log('Found additional data in memory store');
       metadata = { ...metadata, ...memoryData };
     }
 
@@ -706,11 +669,11 @@ app.get('/session-details/:sessionId', async (req, res) => {
     }
 
     if (session.payment_status === 'paid' && !metadata.serverId) {
-      console.log('💰 Payment confirmed, creating server...');
+      console.log('Payment confirmed, creating server...');
       
       try {
         const serverResult = await createPterodactylServer(session);
-        console.log('🎉 Server created successfully');
+        console.log('Server created successfully');
         
         metadata = { ...metadata, ...serverResult.credentials };
         
@@ -732,7 +695,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
         });
         
       } catch (serverError) {
-        console.error('❌ Server creation failed:', serverError.message);
+        console.error('Server creation failed:', serverError.message);
         
         return res.json({
           success: false,
@@ -760,7 +723,7 @@ app.get('/session-details/:sessionId', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Session details error:', error.message);
+    console.error('Session details error:', error.message);
     res.status(500).json({
       success: false,
       error: error.message
@@ -768,7 +731,6 @@ app.get('/session-details/:sessionId', async (req, res) => {
   }
 });
 
-// Create checkout session endpoint with proper billing intervals
 app.post('/create-checkout-session', async (req, res) => {
   try {
     if (!stripe) {
@@ -813,7 +775,6 @@ app.post('/create-checkout-session', async (req, res) => {
       serverType
     });
 
-    // Map billing cycles to Stripe intervals and calculate correct pricing
     const billingIntervalMap = {
       'monthly': { interval: 'month', interval_count: 1 },
       'quarterly': { interval: 'month', interval_count: 3 },
@@ -823,7 +784,6 @@ app.post('/create-checkout-session', async (req, res) => {
 
     const stripeInterval = billingIntervalMap[billingCycle] || billingIntervalMap['monthly'];
     
-    // Calculate the correct amount based on billing cycle
     let unitAmount;
     let description;
     
@@ -831,7 +791,6 @@ app.post('/create-checkout-session', async (req, res) => {
       unitAmount = Math.round((monthlyCost || effectiveMonthlyRate || 9.99) * 100);
       description = `Minecraft Server (${serverType} ${minecraftVersion}) - Monthly`;
     } else {
-      // For non-monthly billing, use the total cost for the period
       unitAmount = Math.round((totalCost || monthlyCost || 9.99) * 100);
       const periodNames = {
         'quarterly': '3 months',
@@ -841,7 +800,7 @@ app.post('/create-checkout-session', async (req, res) => {
       description = `Minecraft Server (${serverType} ${minecraftVersion}) - ${periodNames[billingCycle] || billingCycle}`;
     }
 
-    console.log('💰 Stripe pricing calculation:', {
+    console.log(' Stripe pricing calculation:', {
       billingCycle,
       stripeInterval,
       unitAmount: unitAmount / 100,
@@ -910,7 +869,6 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
@@ -921,12 +879,10 @@ app.get('/health', (req, res) => {
     memoryStore: sessionCredentialsStore.size
   });
 });
-
-// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`\n🚀 Combined User & Server Management Service running on port ${PORT}`);
-  console.log('📍 Available endpoints:');
+  console.log(`\n Combined User & Server Management Service running on port ${PORT}`);
+  console.log(' Available endpoints:');
   console.log('  POST /webhook - Stripe webhook handler');
   console.log('  GET  /session-details/:sessionId - Get session and server details');
   console.log('  POST /create-checkout-session - Create Stripe checkout');
